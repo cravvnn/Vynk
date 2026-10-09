@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Vynk</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #1e1e1e; color: #d6d6d6; font: 12px "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  .bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: #252526; border-bottom: 1px solid #333; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #666; }
+  .dot.on { background: #4cd964; }
+  .dot.warn { background: #ffb020; }
+  .dot.err { background: #ff5c5c; }
+  .spacer { flex: 1; }
+  .muted { color: #8a8a8a; }
+  .row { display: flex; gap: 6px; padding: 6px 8px 0 8px; }
+  input { flex: 1; background: #2d2d30; border: 1px solid #3f3f46; color: #e6e6e6; padding: 4px 6px; border-radius: 3px; outline: none; min-width: 0; }
+  input:focus { border-color: #0e6cc4; }
+  button { background: #0e6cc4; border: none; color: #fff; padding: 5px 10px; border-radius: 3px; cursor: pointer; }
+  button:hover { background: #1679d6; }
+  button.ghost { background: #3a3a3f; }
+  .section { padding: 8px; }
+  .sectionHead { display: flex; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #9a9a9a; padding-bottom: 4px; }
+  .members { border: 1px solid #333; border-radius: 3px; min-height: 40px; max-height: 110px; overflow-y: auto; }
+  .member { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-bottom: 1px solid #2a2a2a; }
+  .member:last-child { border-bottom: none; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; }
+  .ver { color: #8a8a8a; font-size: 10px; }
+  .comp { flex: 1; text-align: right; color: #6f9fcf; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  canvas { width: 100%; height: 170px; background: #141414; border: 1px solid #333; border-radius: 3px; display: block; }
+  .grow { flex: 1; display: flex; flex-direction: column; min-height: 90px; }
+  .log { flex: 1; overflow-y: auto; background: #161616; border: 1px solid #333; border-radius: 3px; padding: 4px 6px; font: 10px Consolas, monospace; color: #9c9c9c; }
+  .log div { white-space: nowrap; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span id="statusDot" class="dot"></span>
+    <span id="statusText">offline</span>
+    <span class="spacer"></span>
+    <button id="copyBtn" class="ghost" title="copy invite text">invite</button>
+    <span id="hostText" class="muted">browser</span>
+  </div>
+  <div class="row"><input id="serverInput" type="text" placeholder="ws://127.0.0.1:8787/ws"></div>
+  <div class="row">
+    <input id="roomInput" type="text" placeholder="room code" maxlength="8">
+    <button id="genBtn" class="ghost">gen</button>
+  </div>
+  <div class="row">
+    <input id="nameInput" type="text" placeholder="your name" maxlength="24">
+    <button id="connectBtn">join</button>
+  </div>
+  <div class="section">
+    <div class="sectionHead"><span>Members</span><span id="memberCount" class="muted">0</span></div>
+    <div id="membersEl" class="members"></div>
+  </div>
+  <div class="section">
+    <div class="sectionHead"><span>Cursors</span><span id="helperText" class="muted">cursors: off</span></div>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="section">
+    <div class="sectionHead"><span>Base project</span><span id="baseText" class="muted">base: none shared</span></div>
+    <div class="row">
+      <button id="shareBaseBtn" class="ghost" title="share your saved .aep as the room base">share base</button>
+      <button id="getBaseBtn" class="ghost" title="download and open the room's base .aep">get base</button>
+    </div>
+  </div>
+  <div class="section grow">
+    <div class="sectionHead"><span>Log</span><span id="compText" class="muted"></span></div>
+    <div id="logEl" class="log"></div>
+  </div>
+  <script src="src/CSInterface.js"></script>
+  <script src="src/config.js"></script>
+  <script src="src/diff.js"></script>
+  <script src="src/main.js"></script>
+</body>
+</html>

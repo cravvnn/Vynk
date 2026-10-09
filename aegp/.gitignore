@@ -1,0 +1,5 @@
+build/
+*.aex
+*.pdb
+*.ilk
+*.obj

@@ -1,0 +1,26 @@
+{
+  "name": "vynk",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "shared/protocol",
+    "server"
+  ],
+  "scripts": {
+    "build": "tsc -b shared/protocol server",
+    "typecheck": "tsc -b shared/protocol server",
+    "start": "node server/dist/index.js",
+    "smoke": "node server/scripts/smoke.mjs",
+    "test": "node tools/test-diff.mjs && node tools/test-jsonpoly.mjs",
+    "test:base": "node tools/test-base-http.mjs",
+    "soak:system": "node tools/soak-system.mjs",
+    "install-panel": "powershell -ExecutionPolicy Bypass -File tools/dev-install.ps1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

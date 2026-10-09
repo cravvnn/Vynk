@@ -1,0 +1,21 @@
+node_modules/
+dist/
+build/
+out/
+data/
+.vs/
+*.user
+*.suo
+*.tsbuildinfo
+
+# Local-only working notes (not for the public repo)
+HANDOFF.md
+PROJECT_MEMORY.md
+AGENTS.md
+
+# Retired standalone cursor helper (superseded by aegp/)
+helper/
+
+# Logs and local environment
+*.log
+.env

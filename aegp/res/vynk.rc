@@ -1,0 +1,3 @@
+// PiPL resource for the Vynk AEGP. The included file is generated at
+// build time by PiPLtool.exe from vynk_PiPL.r (see CMakeLists.txt).
+#include "vynk_PiPL_temp.rc"
