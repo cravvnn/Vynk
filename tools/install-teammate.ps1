@@ -7,6 +7,13 @@ param(
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $failures = 0
 
+$verSrc = Join-Path $here 'panel\src\version.js'
+$pkgVersion = 'unknown'
+if (Test-Path -LiteralPath $verSrc) {
+  $vm = Select-String -Path $verSrc -Pattern "VYNK_VERSION\s*=\s*'([^']+)'" | Select-Object -First 1
+  if ($vm) { $pkgVersion = $vm.Matches[0].Groups[1].Value }
+}
+
 function Step($text) { Write-Host ('==> ' + $text) -ForegroundColor Cyan }
 function Ok($text) { Write-Host ('    ok: ' + $text) -ForegroundColor Green }
 function Bad($text) { Write-Host ('    FAILED: ' + $text) -ForegroundColor Red; $script:failures++ }
@@ -121,11 +128,12 @@ if ($isAdmin) {
 
 Step 'Verifying the install'
 $mainJs = Join-Path $panelDir 'src\main.js'
-if (Test-Path -LiteralPath $mainJs) {
-  $m = Select-String -Path $mainJs -Pattern 'panel m\d+\.\d' | Select-Object -First 1
-  if ($m) { Ok ('panel build: ' + $m.Line.Trim()) } else { Bad 'panel files present but build marker missing' }
+$verJs = Join-Path $panelDir 'src\version.js'
+if ((Test-Path -LiteralPath $mainJs) -and (Test-Path -LiteralPath $verJs)) {
+  $vm = Select-String -Path $verJs -Pattern "VYNK_VERSION\s*=\s*'([^']+)'" | Select-Object -First 1
+  if ($vm) { Ok ('panel build: v' + $vm.Matches[0].Groups[1].Value) } else { Bad 'panel version marker missing' }
 } else {
-  Bad 'panel main.js not found after copy'
+  Bad 'panel files missing after copy'
 }
 $mp = 'HKCU:\Software\Adobe\CSXS.11'
 if (Test-Path $mp) {
@@ -139,7 +147,7 @@ if ($failures -eq 0) {
   Write-Host '  1. Start After Effects (if it was open, restart it fully).'
   Write-Host '  2. Window > Extensions > Vynk.'
   Write-Host '  3. Enter your name + the room code, click join.'
-  Write-Host '  4. The panel log should start with: panel m4.0 starting ... text=off'
+  Write-Host ('  4. The panel log should start with: panel v' + $pkgVersion + ' starting ... text=off')
 } else {
   Write-Host ("Install finished with $failures problem(s) - send this window to Andrew.") -ForegroundColor Red
 }

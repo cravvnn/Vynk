@@ -2,7 +2,7 @@
   'use strict';
 
   var PROTO = 1;
-  var PANEL_BUILD = 'm4.0';
+  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev');
   var CURSOR_FLUSH_MS = 33;
   var POLL_FAST_MS = 200;
   var POLL_SLOW_MS = 500;
@@ -1064,7 +1064,7 @@
     }
     state.pollGeneration = (state.pollGeneration || 0) + 1;
     $('hostText').textContent = 'AE ' + hostVersion;
-    log('panel m4.0 starting (AE ' + hostVersion + ') text=' + (textSyncEnabled() ? 'on' : 'off'));
+    log('panel ' + PANEL_BUILD + ' starting (AE ' + hostVersion + ') text=' + (textSyncEnabled() ? 'on' : 'off'));
     if (!CollabDiff) log('diff module missing - property sync disabled');
     try {
       var extPath = cs.getSystemPath(window.SystemPath.EXTENSION);

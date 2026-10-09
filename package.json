@@ -1,7 +1,7 @@
 {
   "name": "vynk",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.7.0",
   "workspaces": [
     "shared/protocol",
     "server"
@@ -14,7 +14,9 @@
     "test": "node tools/test-diff.mjs && node tools/test-jsonpoly.mjs",
     "test:base": "node tools/test-base-http.mjs",
     "soak:system": "node tools/soak-system.mjs",
-    "install-panel": "powershell -ExecutionPolicy Bypass -File tools/dev-install.ps1"
+    "install-panel": "powershell -ExecutionPolicy Bypass -File tools/dev-install.ps1",
+    "set-version": "node tools/set-version.mjs",
+    "package": "node tools/package.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

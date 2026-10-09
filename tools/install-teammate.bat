@@ -24,6 +24,9 @@ if not errorlevel 1 (
 set "EXTS=%APPDATA%\Adobe\CEP\extensions"
 set "DEST=%EXTS%\com.vynk.panel"
 
+set "VYNBUILD=?"
+for /f "tokens=2 delims='" %%v in ('findstr /r /c:"VYNK_VERSION" "%~dp0panel\src\version.js" 2^>nul') do set "VYNBUILD=%%v"
+
 echo [1/3] Installing the panel...
 if not exist "%EXTS%" mkdir "%EXTS%"
 if exist "%DEST%" rmdir /s /q "%DEST%"
@@ -63,7 +66,7 @@ echo Install finished.
 echo   1. Start After Effects ^(if it was open, restart it fully^).
 echo   2. Window ^> Extensions ^> Vynk.
 echo   3. Enter your name + the room code, click join.
-echo   4. The panel log should start with: panel m4.0 starting ... text=off
+echo   4. The panel log should start with: panel v%VYNBUILD% starting ... text=off
 echo.
 echo If the panel does not appear: send Andrew a screenshot of this window.
 echo.

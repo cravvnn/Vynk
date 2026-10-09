@@ -1,6 +1,6 @@
 # Vynk — native AEGP companion (design + scaffold)
 
-Status: **live in AE 25.4 Beta** (panel m4.x). The `.aex` loads, registers its hooks, and
+Status: **live in AE 25.4 Beta** (panel v0.7.x). The `.aex` loads, registers its hooks, and
 opens a **local bridge on an ephemeral loopback port** written to
 `%LOCALAPPDATA%\Vynk\bridge.port` (HELLO -> `HELLO\tvynk\t1`, PING -> `PONG`).
 It now does two real jobs: the **remote-cursor overlay** (own thread + click-through topmost
