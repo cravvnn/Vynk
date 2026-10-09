@@ -219,7 +219,7 @@
   }
 
   function defaultServer() {
-    return window.VYNK_DEFAULT_SERVER || 'ws://127.0.0.1:8787/ws';
+    return window.VYNK_DEFAULT_SERVER || '';
   }
 
   function loadSettings() {

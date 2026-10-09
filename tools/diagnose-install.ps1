@@ -98,12 +98,24 @@ if ($blocked) {
   Write-Host '  none'
 }
 
-Section 'Local relay reachable (optional)'
-try {
-  $r = Invoke-RestMethod 'https://multiplayerae.allevilmc.com/health' -TimeoutSec 8
-  Write-Host ('  cloud relay ok: ' + ($r | ConvertTo-Json -Compress))
-} catch {
-  Write-Host ('  cloud relay NOT reachable: ' + $_.Exception.Message)
+Section 'Configured relay (optional)'
+$cfg = Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.vynk.panel\src\config.js'
+$server = $null
+if (Test-Path -LiteralPath $cfg) {
+  $m = Select-String -Path $cfg -Pattern "VYNK_DEFAULT_SERVER\s*=\s*'([^']*)'" | Select-Object -First 1
+  if ($m) { $server = $m.Matches[0].Groups[1].Value }
+}
+if ([string]::IsNullOrWhiteSpace($server)) {
+  Write-Host '  no relay configured - enter your team''s relay url in the panel'
+} else {
+  Write-Host ('  panel default server: ' + $server)
+  $health = $server -replace '^ws', 'http' -replace '/ws$', '/health'
+  try {
+    $r = Invoke-RestMethod $health -TimeoutSec 8
+    Write-Host ('  health ok: ' + ($r | ConvertTo-Json -Compress))
+  } catch {
+    Write-Host ('  NOT reachable: ' + $_.Exception.Message)
+  }
 }
 
 Write-Host ''

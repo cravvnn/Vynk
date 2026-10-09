@@ -1,5 +1,5 @@
 param(
-  [string]$Server = 'wss://multiplayerae.allevilmc.com/ws',
+  [string]$Server = '',
   [switch]$Force,
   [switch]$AegpOnly
 )
@@ -92,7 +92,11 @@ Step 'Writing panel settings'
 try {
   $configPath = Join-Path $panelDir 'src\config.js'
   Set-Content -LiteralPath $configPath -Value ("window.VYNK_DEFAULT_SERVER = '" + $Server + "';`r`nwindow.VYNK_TEXT_SYNC = false;") -Encoding UTF8
-  Ok ('server = ' + $Server + ', text sync off')
+  if ([string]::IsNullOrWhiteSpace($Server)) {
+    Ok 'server = (none preset - editors enter the relay url in the panel)'
+  } else {
+    Ok ('server = ' + $Server + ', text sync off')
+  }
 } catch {
   Bad ('could not write config: ' + $_.Exception.Message)
 }
@@ -146,7 +150,7 @@ if ($failures -eq 0) {
   Write-Host 'Install complete.' -ForegroundColor Green
   Write-Host '  1. Start After Effects (if it was open, restart it fully).'
   Write-Host '  2. Window > Extensions > Vynk.'
-  Write-Host '  3. Enter your name + the room code, click join.'
+  Write-Host '  3. Enter your team''s relay url, your name + the room code, then join.'
   Write-Host ('  4. The panel log should start with: panel v' + $pkgVersion + ' starting ... text=off')
 } else {
   Write-Host ("Install finished with $failures problem(s) - send this window to Andrew.") -ForegroundColor Red

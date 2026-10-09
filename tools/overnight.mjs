@@ -7,8 +7,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
 const hours = Number(process.argv[2] ?? 8);
 const room = process.argv[3] ?? 'NIGHT1';
-const wsUrl = process.env.URL ?? 'wss://multiplayerae.allevilmc.com/ws';
-const healthUrl = process.env.HEALTH_URL ?? 'https://multiplayerae.allevilmc.com/health';
+const wsUrl = process.env.URL ?? 'ws://127.0.0.1:8787/ws';
+const healthUrl = process.env.HEALTH_URL ?? 'http://127.0.0.1:8787/health';
 const reportDir = process.env.REPORT_DIR ?? path.join(process.env.TEMP ?? '.', 'opencode');
 const reportPath = path.join(reportDir, 'overnight-report.txt');
 

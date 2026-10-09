@@ -22,6 +22,11 @@ First packaged release of Vynk (formerly "Multiplayer AE").
 - Reproducible `npm run package`: versioned panel/server zips, a generated installer
   bundle and a SHA-256 manifest.
 
+### Changed
+
+- The installer no longer preconfigures a relay server; editors enter their team's
+  relay URL in the panel.
+
 ### Notes
 
 - Windows only; After Effects 2020+.
