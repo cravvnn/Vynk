@@ -16,7 +16,8 @@
     "soak:system": "node tools/soak-system.mjs",
     "install-panel": "powershell -ExecutionPolicy Bypass -File tools/dev-install.ps1",
     "set-version": "node tools/set-version.mjs",
-    "package": "node tools/package.mjs"
+    "package": "node tools/package.mjs",
+    "verify:ae": "node tools/ae-verify.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

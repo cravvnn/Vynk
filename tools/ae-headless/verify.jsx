@@ -1,19 +1,30 @@
 (function () {
-  var report = { ok: false, steps: [], notes: [] };
+  var report = { ok: false, steps: [], notes: [], passed: 0, failed: 0 };
   var finalFile = new File(Folder.temp.fsName + "/ae-verify-result.json");
   var tmpFile = new File(Folder.temp.fsName + "/ae-verify-result.tmp");
 
-  function record(name, ok, detail) {
-    report.steps.push({ name: name, ok: !!ok, detail: String(detail) });
+  function t(name, ok, detail) {
+    report.steps.push({ name: name, ok: !!ok, detail: String(detail === undefined ? "" : detail) });
+    if (ok) report.passed++;
+    else report.failed++;
   }
 
-  function snapshot() {
-    var raw = collab.getActiveCompState();
-    if (!raw || raw === "null") return null;
-    return JSON.parse(raw);
+  function check(name, fn) {
+    var result;
+    try {
+      result = fn();
+    } catch (e) {
+      t(name, false, "exception: " + e.toString());
+      return;
+    }
+    if (result === true) t(name, true, "");
+    else if (result === false || result === undefined || result === null) t(name, false, "failed");
+    else t(name, false, String(result));
   }
 
   function finish() {
+    report.ok = report.failed === 0 && !report.error;
+    report.total = report.passed + report.failed;
     try {
       var text = JSON.stringify(report);
       tmpFile.encoding = "UTF-8";
@@ -28,6 +39,90 @@
     try { app.quit(); } catch (e2) {}
   }
 
+  function apply(op) {
+    return JSON.parse(collab.applyOp(JSON.stringify(op)));
+  }
+
+  var compId = null;
+
+  function snapshot() {
+    var raw = collab.getActiveCompState();
+    if (!raw || raw === "null") return null;
+    return JSON.parse(raw);
+  }
+
+  function effectsState() {
+    var raw = collab.getActiveCompEffects(0, 1);
+    if (!raw || raw === "null") return null;
+    return JSON.parse(raw);
+  }
+
+  function layerBySid(snap, sid) {
+    for (var i = 0; i < snap.layers.length; i++) if (snap.layers[i].sid === sid) return snap.layers[i];
+    return null;
+  }
+
+  function layerByName(snap, name) {
+    for (var i = 0; i < snap.layers.length; i++) if (snap.layers[i].name === name) return snap.layers[i];
+    return null;
+  }
+
+  function layerEffects(sid) {
+    var s = effectsState();
+    if (!s) return null;
+    for (var i = 0; i < s.layers.length; i++) if (s.layers[i].sid === sid) return s.layers[i].effects;
+    return null;
+  }
+
+  function effectById(sid, id) {
+    var list = layerEffects(sid);
+    if (!list) return null;
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+
+  function shapeOf(sid) {
+    var raw = collab.getLayerShape(compId, sid);
+    if (!raw || raw === "null") return null;
+    return JSON.parse(raw);
+  }
+
+  function firstScalarEffectProp(fx) {
+    for (var key in fx.props) {
+      var p = fx.props[key];
+      if (p && typeof p.value === "number") return key;
+    }
+    return null;
+  }
+
+  function treeHas(nodes, mn) {
+    if (!nodes) return false;
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].mn === mn) return true;
+      if (nodes[i].children && treeHas(nodes[i].children, mn)) return true;
+    }
+    return false;
+  }
+
+  function addSolid(name, index) {
+    var op = {
+      opId: "add-" + name,
+      kind: "add",
+      target: { comp: compId, layer: "st1a2b3c4d5e6f" },
+      value: {
+        name: name,
+        type: "solid",
+        index: index,
+        inPoint: 0,
+        outPoint: 10,
+        startTime: 0,
+        enabled: true,
+        solid: { color: [0.2, 0.4, 0.8], width: 400, height: 400, duration: 10, pixelAspect: 1 }
+      }
+    };
+    return apply(op);
+  }
+
   try {
     var here = new File($.fileName).parent;
     var root = here.parent.parent;
@@ -35,22 +130,23 @@
     report.hostscriptPath = jsx;
 
     $.evalFile(jsx);
-    record("evalFile hostscript", typeof collab !== "undefined", "typeof collab = " + (typeof collab));
+    t("evalFile hostscript", typeof collab !== "undefined", "typeof collab = " + typeof collab);
 
     if (app.project === null) app.newProject();
     var comp = app.project.items.addComp("CollabVerify", 1920, 1080, 1, 10, 30);
     comp.layers.addSolid([1, 0, 0], "Layer A", 500, 500, 1);
     comp.layers.addSolid([0, 1, 0], "Layer B", 500, 500, 1);
-    record("created test comp", comp.numLayers === 2, "layers=" + comp.numLayers);
+    t("created test comp", comp.numLayers === 2, "layers=" + comp.numLayers);
 
     try { comp.openInViewer(); } catch (e3) { report.notes.push("openInViewer threw: " + e3.toString()); }
     var guard = 0;
     while (app.project.activeItem === null && guard < 3000) { $.sleep(2); guard++; }
 
     var snap1 = snapshot();
-    record("activeItem is comp", snap1 !== null, snap1 ? snap1.comp.name : "getActiveCompState returned null");
+    t("activeItem is comp", snap1 !== null, snap1 ? snap1.comp.name : "getActiveCompState returned null");
     if (!snap1) { finish(); return; }
-
+    compId = snap1.comp.id;
+    report.compId = compId;
     var sidA = null;
     var sidB = null;
     var i;
@@ -58,69 +154,426 @@
       if (snap1.layers[i].name === "Layer A") sidA = snap1.layers[i].sid;
       if (snap1.layers[i].name === "Layer B") sidB = snap1.layers[i].sid;
     }
-    record("layer sids resolved", !!sidA && !!sidB, sidA + " / " + sidB);
+    t("layer sids resolved", !!sidA && !!sidB, sidA + " / " + sidB);
 
     var snap1b = snapshot();
     var sidA2 = null;
-    var j;
-    for (j = 0; j < snap1b.layers.length; j++) if (snap1b.layers[j].name === "Layer A") sidA2 = snap1b.layers[j].sid;
-    record("sid stable across polls", sidA === sidA2, sidA + " == " + sidA2);
+    for (i = 0; i < snap1b.layers.length; i++) if (snap1b.layers[i].name === "Layer A") sidA2 = snap1b.layers[i].sid;
+    t("sid stable across polls", sidA === sidA2, sidA + " == " + sidA2);
 
-    function apply(op) {
-      return JSON.parse(collab.applyOp(JSON.stringify(op)));
-    }
+    // ---- transform sets -------------------------------------------------------
+    check("set transform.position", function () {
+      var r = apply({ opId: "v1", kind: "set", target: { comp: compId, layer: sidA }, path: "transform.position", value: [123, 456] });
+      var p = layerBySid(snapshot(), sidA);
+      var v = p ? p.transform.position.value : null;
+      if (!r.ok) return JSON.stringify(r);
+      if (!v || Math.abs(v[0] - 123) > 1e-3 || Math.abs(v[1] - 456) > 1e-3) return "pos=" + JSON.stringify(v);
+      return true;
+    });
 
-    function findLayer(list, sid) {
-      for (var z = 0; z < list.length; z++) if (list[z].sid === sid) return list[z];
-      return null;
-    }
+    check("set transform.scale", function () {
+      var r = apply({ opId: "v-scale", kind: "set", target: { comp: compId, layer: sidA }, path: "transform.scale", value: [150, 80] });
+      var v = layerBySid(snapshot(), sidA).transform.scale.value;
+      if (!r.ok) return JSON.stringify(r);
+      if (Math.abs(v[0] - 150) > 1e-3 || Math.abs(v[1] - 80) > 1e-3) return "scale=" + JSON.stringify(v);
+      return true;
+    });
 
-    var compId = snap1.comp.id;
+    check("set transform.rotation (scalar)", function () {
+      var r = apply({ opId: "v-rot", kind: "set", target: { comp: compId, layer: sidA }, path: "transform.rotation", value: 33 });
+      var v = layerBySid(snapshot(), sidA).transform.rotation.value;
+      if (!r.ok) return JSON.stringify(r);
+      if (Math.abs(v - 33) > 1e-3) return "rot=" + v;
+      return true;
+    });
 
-    var r1 = apply({ opId: "v1", kind: "set", target: { comp: compId, layer: sidA }, path: "transform.position", value: [123, 456] });
-    var p1 = findLayer(snapshot().layers, sidA);
-    var posA = p1 ? p1.transform.position.value : null;
-    record("set transform.position", r1.ok === true && posA && Math.abs(posA[0] - 123) < 1e-3 && Math.abs(posA[1] - 456) < 1e-3, JSON.stringify(posA));
+    check("set transform.opacity (scalar)", function () {
+      var r = apply({ opId: "v-op", kind: "set", target: { comp: compId, layer: sidB }, path: "transform.opacity", value: 42 });
+      var v = layerBySid(snapshot(), sidB).transform.opacity.value;
+      if (!r.ok) return JSON.stringify(r);
+      if (Math.abs(v - 42) > 1e-3) return "opacity=" + v;
+      return true;
+    });
 
-    var r2 = apply({ opId: "v2", kind: "set", target: { comp: compId, layer: sidA }, path: "enabled", value: false });
-    var p2 = findLayer(snapshot().layers, sidA);
-    record("set enabled false", r2.ok === true && p2 && p2.enabled === false, "enabled=" + (p2 ? p2.enabled : "n/a"));
+    // ---- scalar layer fields --------------------------------------------------
+    check("set enabled false / in+out point / startTime", function () {
+      var r1 = apply({ opId: "s-en", kind: "set", target: { comp: compId, layer: sidA }, path: "enabled", value: false });
+      var r2 = apply({ opId: "s-in", kind: "set", target: { comp: compId, layer: sidA }, path: "inPoint", value: 1.5 });
+      var r3 = apply({ opId: "s-out", kind: "set", target: { comp: compId, layer: sidA }, path: "outPoint", value: 8 });
+      var r4 = apply({ opId: "s-st", kind: "set", target: { comp: compId, layer: sidA }, path: "startTime", value: 0.5 });
+      var l = layerBySid(snapshot(), sidA);
+      if (!r1.ok || !r2.ok || !r3.ok || !r4.ok) return [r1, r2, r3, r4].join(" ");
+      if (l.enabled !== false) return "enabled=" + l.enabled;
+      if (Math.abs(l.inPoint - 1.5) > 1e-3) return "inPoint=" + l.inPoint;
+      if (Math.abs(l.outPoint - 8) > 1e-3) return "outPoint=" + l.outPoint;
+      if (Math.abs(l.startTime - 0.5) > 1e-3) return "startTime=" + l.startTime;
+      return true;
+    });
 
-    var r3 = apply({ opId: "v3", kind: "set", target: { comp: compId, layer: sidA }, path: "name", value: "Layer A2" });
-    var p3 = findLayer(snapshot().layers, sidA);
-    record("set name", r3.ok === true && p3 && p3.name === "Layer A2", "name=" + (p3 ? p3.name : "n/a"));
+    check("set name", function () {
+      var r = apply({ opId: "s-name", kind: "set", target: { comp: compId, layer: sidA }, path: "name", value: "Layer A2" });
+      var l = layerBySid(snapshot(), sidA);
+      if (!r.ok) return JSON.stringify(r);
+      if (l.name !== "Layer A2") return "name=" + l.name;
+      return true;
+    });
 
-    var r4 = apply({ opId: "k1", kind: "addKey", target: { comp: compId, layer: sidA }, path: "transform.position", value: [0, 0], time: 0 });
-    var r5 = apply({ opId: "k2", kind: "addKey", target: { comp: compId, layer: sidA }, path: "transform.position", value: [100, 100], time: 2 });
-    var kp = findLayer(snapshot().layers, sidA).transform.position;
-    record("addKey x2", r4.ok === true && r5.ok === true && kp.numKeys === 2 && kp.keys && kp.keys.length === 2, "numKeys=" + kp.numKeys);
+    // ---- keyframes ------------------------------------------------------------
+    check("addKey x2", function () {
+      var r4 = apply({ opId: "k1", kind: "addKey", target: { comp: compId, layer: sidA }, path: "transform.position", value: [0, 0], time: 0 });
+      var r5 = apply({ opId: "k2", kind: "addKey", target: { comp: compId, layer: sidA }, path: "transform.position", value: [100, 100], time: 2 });
+      var kp = layerBySid(snapshot(), sidA).transform.position;
+      if (!r4.ok || !r5.ok) return r4 + " " + r5;
+      if (kp.numKeys !== 2 || !kp.keys || kp.keys.length !== 2) return "numKeys=" + kp.numKeys;
+      return true;
+    });
 
-    var r6 = apply({ opId: "k3", kind: "setKey", target: { comp: compId, layer: sidA }, path: "transform.position", value: [50, 60], time: 2 });
-    var kp2 = findLayer(snapshot().layers, sidA).transform.position;
-    var val2 = null;
-    if (kp2.keys) for (var q = 0; q < kp2.keys.length; q++) if (Math.abs(kp2.keys[q].t - 2) < 1e-4) val2 = kp2.keys[q].v;
-    record("setKey at t=2", r6.ok === true && val2 && Math.abs(val2[0] - 50) < 1e-3, JSON.stringify(val2));
+    check("addKey carries interpolation + ease", function () {
+      var r = apply({
+        opId: "k-ease",
+        kind: "addKey",
+        target: { comp: compId, layer: sidA },
+        path: "transform.position",
+        value: [200, 200],
+        time: 4,
+        interp: { inType: 6612, outType: 6613 },
+        ease: { "in": [[10, 33.33]], "out": [[20, 50]] }
+      });
+      var kp = layerBySid(snapshot(), sidA).transform.position;
+      var k = null;
+      for (var q = 0; q < kp.keys.length; q++) if (Math.abs(kp.keys[q].t - 4) < 1e-4) k = kp.keys[q];
+      if (!r.ok) return JSON.stringify(r);
+      if (!k) return "key at t=4 missing";
+      if (k.inT !== 6612 || k.outT !== 6613) return "interp=" + k.inT + "/" + k.outT;
+      if (!k.inEase || Math.abs(k.inEase[0][0] - 10) > 1e-2) return "inEase=" + JSON.stringify(k.inEase);
+      if (!k.outEase || Math.abs(k.outEase[0][0] - 20) > 1e-2) return "outEase=" + JSON.stringify(k.outEase);
+      return true;
+    });
 
-    var r7 = apply({ opId: "k4", kind: "removeKey", target: { comp: compId, layer: sidA }, path: "transform.position", time: 2 });
-    var kp3 = findLayer(snapshot().layers, sidA).transform.position;
-    record("removeKey at t=2", r7.ok === true && kp3.numKeys === 1, "numKeys=" + kp3.numKeys);
+    check("addKey spatial tangents on position", function () {
+      var r = apply({
+        opId: "k-sp",
+        kind: "addKey",
+        target: { comp: compId, layer: sidA },
+        path: "transform.position",
+        value: [300, 300],
+        time: 6,
+        spatial: { "in": [5, 6], "out": [7, 8] }
+      });
+      var kp = layerBySid(snapshot(), sidA).transform.position;
+      var k = null;
+      for (var q = 0; q < kp.keys.length; q++) if (Math.abs(kp.keys[q].t - 6) < 1e-4) k = kp.keys[q];
+      if (!r.ok) return JSON.stringify(r);
+      if (!k) return "key at t=6 missing";
+      if (!k.inSp || Math.abs(k.inSp[0] - 5) > 1e-2) return "inSp=" + JSON.stringify(k.inSp);
+      if (!k.outSp || Math.abs(k.outSp[1] - 8) > 1e-2) return "outSp=" + JSON.stringify(k.outSp);
+      return true;
+    });
 
-    var r8 = apply({ opId: "o1", kind: "set", target: { comp: compId, layer: sidB }, path: "transform.opacity", value: 42 });
-    var p8 = findLayer(snapshot().layers, sidB);
-    record("set opacity", r8.ok === true && p8 && p8.transform.opacity.value === 42, "opacity=" + (p8 ? p8.transform.opacity.value : "n/a"));
+    check("setKey at t=2", function () {
+      var r = apply({ opId: "k3", kind: "setKey", target: { comp: compId, layer: sidA }, path: "transform.position", value: [50, 60], time: 2 });
+      var kp = layerBySid(snapshot(), sidA).transform.position;
+      var v = null;
+      for (var q = 0; q < kp.keys.length; q++) if (Math.abs(kp.keys[q].t - 2) < 1e-4) v = kp.keys[q].v;
+      if (!r.ok) return JSON.stringify(r);
+      if (!v || Math.abs(v[0] - 50) > 1e-3) return "v=" + JSON.stringify(v);
+      return true;
+    });
 
-    var r9 = apply({ opId: "x1", kind: "set", target: { comp: "999999|NoSuchComp", layer: sidA }, path: "transform.opacity", value: 50 });
-    record("unknown comp rejected", r9.ok === false, JSON.stringify(r9));
+    check("removeKey at t=2", function () {
+      var before = layerBySid(snapshot(), sidA).transform.position.numKeys;
+      var r = apply({ opId: "k4", kind: "removeKey", target: { comp: compId, layer: sidA }, path: "transform.position", time: 2 });
+      var after = layerBySid(snapshot(), sidA).transform.position.numKeys;
+      if (!r.ok) return JSON.stringify(r);
+      if (after !== before - 1) return "numKeys " + before + " -> " + after;
+      return true;
+    });
 
-    var r10 = apply({ opId: "x2", kind: "set", target: { comp: compId, layer: "nope" }, path: "transform.opacity", value: 50 });
-    record("unknown layer rejected", r10.ok === false, JSON.stringify(r10));
+    // ---- expressions ----------------------------------------------------------
+    check("setExpr sets expression text", function () {
+      var r = apply({ opId: "e1", kind: "setExpr", target: { comp: compId, layer: sidA }, path: "transform.rotation@expr", value: { text: "time*30", enabled: true } });
+      var p = layerBySid(snapshot(), sidA).transform.rotation;
+      if (!r.ok) return JSON.stringify(r);
+      if (p.expr !== "time*30") return "expr=" + p.expr;
+      return true;
+    });
 
-    report.compId = compId;
-    report.ok = true;
+    check("setExpr with empty text clears expression", function () {
+      var r = apply({ opId: "e2", kind: "setExpr", target: { comp: compId, layer: sidA }, path: "transform.rotation@expr", value: { text: "" } });
+      var p = layerBySid(snapshot(), sidA).transform.rotation;
+      if (!r.ok) return JSON.stringify(r);
+      if (p.expr !== undefined && p.expr !== "") return "expr still=" + p.expr;
+      return true;
+    });
+
+    // ---- add layer + parenting ------------------------------------------------
+    check("add null layer", function () {
+      var r = apply({
+        opId: "add-null",
+        kind: "add",
+        target: { comp: compId, layer: "staaaaaaaaaaaa" },
+        value: { name: "Null Parent", type: "null", index: 1, inPoint: 0, outPoint: 10, startTime: 0, enabled: true, transform: { position: { value: [960, 540] } } }
+      });
+      var l = layerByName(snapshot(), "Null Parent");
+      if (!r.ok) return JSON.stringify(r);
+      if (!l) return "null layer not found";
+      return true;
+    });
+
+    check("set parent then clear", function () {
+      var snap = snapshot();
+      var parent = layerByName(snap, "Null Parent");
+      var r = apply({ opId: "p1", kind: "set", target: { comp: compId, layer: sidA }, path: "parent", value: parent.sid });
+      var l = layerBySid(snapshot(), sidA);
+      if (!r.ok) return JSON.stringify(r);
+      if (l.parent !== parent.sid) return "parent=" + l.parent;
+      var r2 = apply({ opId: "p2", kind: "set", target: { comp: compId, layer: sidA }, path: "parent", value: null });
+      var l2 = layerBySid(snapshot(), sidA);
+      if (!r2.ok) return JSON.stringify(r2);
+      if (l2.parent !== null) return "parent not cleared: " + l2.parent;
+      return true;
+    });
+
+    check("reorder layer to index 1", function () {
+      var target = layerByName(snapshot(), "Null Parent");
+      var r = apply({ opId: "ro1", kind: "reorder", target: { comp: compId, layer: target.sid }, index: 1 });
+      var snap = snapshot();
+      if (!r.ok) return JSON.stringify(r);
+      if (snap.layers[0].sid !== target.sid) return "index0=" + snap.layers[0].name;
+      return true;
+    });
+
+    // ---- motion blur / frame blending / track matte ---------------------------
+    check("motionBlur + frameBlending + type", function () {
+      var r1 = apply({ opId: "mb", kind: "set", target: { comp: compId, layer: sidA }, path: "motionBlur", value: true });
+      var r2 = apply({ opId: "fb", kind: "set", target: { comp: compId, layer: sidA }, path: "frameBlending", value: true });
+      var r3 = apply({ opId: "fbt", kind: "set", target: { comp: compId, layer: sidA }, path: "frameBlendingType", value: 2 });
+      var l = layerBySid(snapshot(), sidA);
+      if (!r1.ok || !r2.ok || !r3.ok) return r1 + " " + r2 + " " + r3;
+      if (l.motionBlur !== true) return "motionBlur=" + l.motionBlur;
+      if (l.frameBlending !== true) return "frameBlending=" + l.frameBlending;
+      if (l.frameBlendingType !== 2) return "frameBlendingType=" + l.frameBlendingType;
+      return true;
+    });
+
+    check("trkMatte + trkType", function () {
+      var r1 = apply({ opId: "tm", kind: "set", target: { comp: compId, layer: sidB }, path: "trkMatte", value: true });
+      var r2 = apply({ opId: "tt", kind: "set", target: { comp: compId, layer: sidB }, path: "trkType", value: 2 });
+      var l = layerBySid(snapshot(), sidB);
+      if (!r1.ok || !r2.ok) return r1 + " " + r2;
+      if (l.trkMatte !== true) return "trkMatte=" + l.trkMatte;
+      if (l.trkType !== 2) return "trkType=" + l.trkType;
+      return true;
+    });
+
+    // ---- comp settings --------------------------------------------------------
+    check("setComp frameRate / bgColor / width / motionBlur", function () {
+      var r1 = apply({ opId: "c1", kind: "setComp", target: { comp: compId }, path: "frameRate", value: 24 });
+      var r2 = apply({ opId: "c2", kind: "setComp", target: { comp: compId }, path: "bgColor", value: [0.1, 0.2, 0.3] });
+      var r3 = apply({ opId: "c3", kind: "setComp", target: { comp: compId }, path: "width", value: 1280 });
+      var r4 = apply({ opId: "c4", kind: "setComp", target: { comp: compId }, path: "motionBlur", value: true });
+      var c = snapshot().comp;
+      if (!r1.ok || !r2.ok || !r3.ok || !r4.ok) return r1 + " " + r2 + " " + r3 + " " + r4;
+      if (Math.abs(c.frameRate - 24) > 1e-3) return "frameRate=" + c.frameRate;
+      if (Math.abs(c.width - 1280) > 1e-3) return "width=" + c.width;
+      if (c.motionBlur !== true) return "comp motionBlur=" + c.motionBlur;
+      return true;
+    });
+
+    check("setComp unknown field rejected", function () {
+      var r = apply({ opId: "c-bad", kind: "setComp", target: { comp: compId }, path: "bogusField", value: 1 });
+      if (r.ok !== false) return "expected failure, got " + JSON.stringify(r);
+      return true;
+    });
+
+    // ---- effects --------------------------------------------------------------
+    check("addEffect ADBE Glo2", function () {
+      var r = apply({ opId: "fx1", kind: "addEffect", target: { comp: compId, layer: sidA }, path: "fx:ADBE Glo2#1", value: { matchName: "ADBE Glo2", name: "Glow", enabled: true, index: 1 } });
+      if (!r.ok) return JSON.stringify(r);
+      var fx = effectById(sidA, "ADBE Glo2#1");
+      if (!fx) return "effect not found after add";
+      if (fx.matchName !== "ADBE Glo2") return "matchName=" + fx.matchName;
+      return true;
+    });
+
+    check("set effect parameter via fx path", function () {
+      var fx = effectById(sidA, "ADBE Glo2#1");
+      if (!fx) return "no effect";
+      var key = firstScalarEffectProp(fx);
+      if (!key) return "no scalar effect param";
+      var before = fx.props[key].value;
+      var target = before >= 50 ? before - 10 : before + 10;
+      var r = apply({ opId: "fxp1", kind: "set", target: { comp: compId, layer: sidA }, path: "fx:ADBE Glo2#1/" + key, value: target });
+      var after = effectById(sidA, "ADBE Glo2#1").props[key].value;
+      if (!r.ok) return JSON.stringify(r);
+      if (Math.abs(after - before) < 1e-3) return key + " unchanged (" + before + ")";
+      return true;
+    });
+
+    check("setEffect disable + removeEffect", function () {
+      var r1 = apply({ opId: "fxe1", kind: "setEffect", target: { comp: compId, layer: sidA }, path: "fx:ADBE Glo2#1", value: { enabled: false } });
+      if (!r1.ok) return JSON.stringify(r1);
+      if (effectById(sidA, "ADBE Glo2#1").enabled !== false) return "not disabled";
+      var r2 = apply({ opId: "fxr1", kind: "removeEffect", target: { comp: compId, layer: sidA }, path: "fx:ADBE Glo2#1" });
+      if (!r2.ok) return JSON.stringify(r2);
+      if (effectById(sidA, "ADBE Glo2#1")) return "effect still present";
+      return true;
+    });
+
+    check("addEffect unknown matchName rejected", function () {
+      var r = apply({ opId: "fxbad", kind: "addEffect", target: { comp: compId, layer: sidA }, path: "fx:ADBE NoSuchFx#1", value: { matchName: "ADBE NoSuchFx" } });
+      if (r.ok !== false) return "expected failure, got " + JSON.stringify(r);
+      return true;
+    });
+
+    // ---- masks ----------------------------------------------------------------
+    check("addMask with shape", function () {
+      var r = apply({
+        opId: "m-add",
+        kind: "addMask",
+        target: { comp: compId, layer: sidA },
+        path: "mask:1",
+        value: {
+          name: "Mask 1",
+          maskMode: 1,
+          inverted: false,
+          maskFeather: 0,
+          path: { value: { vertices: [[100, 100], [400, 100], [400, 400], [100, 400]], inTangents: [[0, 0], [0, 0], [0, 0], [0, 0]], outTangents: [[0, 0], [0, 0], [0, 0], [0, 0]], closed: true } }
+        }
+      });
+      var l = layerBySid(snapshot(), sidA);
+      if (!r.ok) return JSON.stringify(r);
+      if (!l.masks || l.masks.length < 1) return "masks=" + JSON.stringify(l.masks);
+      return true;
+    });
+
+    check("set mask feather + inverted", function () {
+      var r1 = apply({ opId: "m-f", kind: "set", target: { comp: compId, layer: sidA }, path: "mask:1/maskFeather", value: 12 });
+      var r2 = apply({ opId: "m-i", kind: "set", target: { comp: compId, layer: sidA }, path: "mask:1/inverted", value: true });
+      var m = layerBySid(snapshot(), sidA).masks[0];
+      if (!r1.ok || !r2.ok) return r1 + " " + r2;
+      if (Math.abs(m.maskFeather - 12) > 1e-3) return "feather=" + m.maskFeather;
+      if (m.inverted !== true) return "inverted=" + m.inverted;
+      return true;
+    });
+
+    check("move mask path", function () {
+      var moved = { vertices: [[200, 200], [500, 200], [500, 500], [200, 500]], inTangents: [[0, 0], [0, 0], [0, 0], [0, 0]], outTangents: [[0, 0], [0, 0], [0, 0], [0, 0]], closed: true };
+      var r = apply({ opId: "m-move", kind: "set", target: { comp: compId, layer: sidA }, path: "mask:1/path", value: moved });
+      var m = layerBySid(snapshot(), sidA).masks[0];
+      if (!r.ok) return JSON.stringify(r);
+      var v = m.path && m.path.value ? m.path.value.vertices : null;
+      if (!v || Math.abs(v[0][0] - 200) > 1e-2) return "vertices=" + JSON.stringify(v);
+      return true;
+    });
+
+    check("removeMask", function () {
+      var before = layerBySid(snapshot(), sidA).masks.length;
+      var r = apply({ opId: "m-rm", kind: "removeMask", target: { comp: compId, layer: sidA }, path: "mask:1" });
+      var l = layerBySid(snapshot(), sidA);
+      var after = l.masks ? l.masks.length : 0;
+      if (!r.ok) return JSON.stringify(r);
+      if (after !== before - 1) return "mask count " + before + " -> " + after;
+      return true;
+    });
+
+    check("removeMask missing index rejected", function () {
+      var r = apply({ opId: "m-rmbad", kind: "removeMask", target: { comp: compId, layer: sidA }, path: "mask:99" });
+      if (r.ok !== false) return "expected failure, got " + JSON.stringify(r);
+      return true;
+    });
+
+    // ---- add layer variants + shape/text --------------------------------------
+    check("add solid is idempotent by name", function () {
+      var r1 = addSolid("Idem Solid", 1);
+      var countAfterFirst = snapshot().layers.length;
+      var r2 = addSolid("Idem Solid", 1);
+      var countAfterSecond = snapshot().layers.length;
+      if (!r1.ok || !r2.ok) return r1 + " " + r2;
+      if (countAfterSecond !== countAfterFirst) return "duplicated: " + countAfterFirst + " -> " + countAfterSecond;
+      return true;
+    });
+
+    check("add adjustment layer", function () {
+      var r = apply({ opId: "add-adj", kind: "add", target: { comp: compId }, value: { name: "Adj", type: "adjustment", index: 1, enabled: true } });
+      if (!r.ok) return JSON.stringify(r);
+      if (!layerByName(snapshot(), "Adj")) return "not found";
+      return true;
+    });
+
+    check("add shape layer with tree", function () {
+      var r = apply({
+        opId: "add-shape",
+        kind: "add",
+        target: { comp: compId },
+        value: {
+          name: "Shape L",
+          type: "shape",
+          index: 1,
+          enabled: true,
+          shape: [{ mn: "ADBE Vector Group", name: "Group 1", children: [{ mn: "ADBE Vector Shape - Rect", name: "Rect 1", children: [{ mn: "ADBE Vector Rect Size", prop: { value: [200, 200] } }] }] }]
+        }
+      });
+      if (!r.ok) return JSON.stringify(r);
+      var l = layerByName(snapshot(), "Shape L");
+      if (!l) return "shape layer not found";
+      var sh = shapeOf(l.sid);
+      if (!sh || !sh.tree || sh.tree.length < 1) return "empty shape tree";
+      if (!treeHas(sh.tree, "ADBE Vector Group")) return "no vector group node";
+      return true;
+    });
+
+    check("setShape replaces tree", function () {
+      var l = layerByName(snapshot(), "Shape L");
+      var r = apply({ opId: "ss1", kind: "setShape", target: { comp: compId, layer: l.sid }, path: "shape", value: { tree: [{ mn: "ADBE Vector Group", name: "G2", children: [{ mn: "ADBE Vector Shape - Ellipse", name: "Ell", children: [{ mn: "ADBE Vector Ellipse Size", prop: { value: [80, 80] } }] }] }] } });
+      if (!r.ok) return JSON.stringify(r);
+      var sh = shapeOf(l.sid);
+      if (!treeHas(sh.tree, "ADBE Vector Shape - Ellipse")) return "ellipse node missing";
+      return true;
+    });
+
+    check("add text layer + set textDoc", function () {
+      var r = apply({ opId: "add-text", kind: "add", target: { comp: compId }, value: { name: "Text L", type: "text", index: 1, enabled: true, sourceText: "Hello" } });
+      if (!r.ok) return JSON.stringify(r);
+      var l = layerByName(snapshot(), "Text L");
+      if (!l) return "text layer not found";
+      var r2 = apply({ opId: "td1", kind: "set", target: { comp: compId, layer: l.sid }, path: "textDoc", value: { text: "Hello world" } });
+      if (!r2.ok) return JSON.stringify(r2);
+      var l2 = layerByName(snapshot(), "Text L");
+      if (!l2.textDoc || l2.textDoc.text !== "Hello world") return "text=" + (l2.textDoc ? l2.textDoc.text : "null");
+      return true;
+    });
+
+    check("add unsupported type rejected", function () {
+      var r = apply({ opId: "add-bad", kind: "add", target: { comp: compId }, value: { name: "Nope", type: "banana" } });
+      if (r.ok !== false) return "expected failure, got " + JSON.stringify(r);
+      return true;
+    });
+
+    // ---- remove layer ---------------------------------------------------------
+    check("remove layer", function () {
+      var l = layerByName(snapshot(), "Idem Solid");
+      var r = apply({ opId: "rm-layer", kind: "remove", target: { comp: compId, layer: l.sid } });
+      if (!r.ok) return JSON.stringify(r);
+      if (layerByName(snapshot(), "Idem Solid")) return "layer still present";
+      return true;
+    });
+
+    // ---- negative targeting ---------------------------------------------------
+    check("unknown comp rejected", function () {
+      var r = apply({ opId: "x1", kind: "set", target: { comp: "999999|NoSuchComp", layer: sidA }, path: "transform.opacity", value: 50 });
+      if (r.ok !== false) return "expected failure, got " + JSON.stringify(r);
+      return true;
+    });
+
+    check("unknown layer rejected", function () {
+      var r = apply({ opId: "x2", kind: "set", target: { comp: compId, layer: "nope" }, path: "transform.opacity", value: 50 });
+      if (r.ok !== false) return "expected failure, got " + JSON.stringify(r);
+      return true;
+    });
   } catch (e) {
     report.error = e.toString();
     report.line = e.line;
-    report.ok = false;
   }
   finish();
 })();
