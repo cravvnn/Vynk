@@ -20,7 +20,7 @@ resource 'PiPL' (16000) {
 		},
 		/* [4] */
 		Version {
-			1792
+			1793
 		},
 		/* [5] */
 #ifdef AE_OS_WIN

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.vynk" ExtensionBundleVersion="0.7.0" ExtensionBundleName="Vynk">
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.vynk" ExtensionBundleVersion="0.7.1" ExtensionBundleName="Vynk">
   <ExtensionList>
-    <Extension Id="com.vynk.panel" Version="0.7.0"/>
+    <Extension Id="com.vynk.panel" Version="0.7.1"/>
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>

@@ -66,7 +66,7 @@ echo Install finished.
 echo   1. Start After Effects ^(if it was open, restart it fully^).
 echo   2. Window ^> Extensions ^> Vynk.
 echo   3. Enter your team's relay url, your name + the room code, then join.
-echo   4. The panel log should start with: panel v%VYNBUILD% starting ... text=off
+echo   4. The panel log should start with: panel v%VYNBUILD% starting ... text=on
 echo.
 echo If the panel does not appear: send Andrew a screenshot of this window.
 echo.

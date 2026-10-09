@@ -1,5 +1,6 @@
 param(
   [string]$Server = '',
+  [bool]$TextSync = $true,
   [switch]$Force,
   [switch]$AegpOnly
 )
@@ -91,11 +92,13 @@ try {
 Step 'Writing panel settings'
 try {
   $configPath = Join-Path $panelDir 'src\config.js'
-  Set-Content -LiteralPath $configPath -Value ("window.VYNK_DEFAULT_SERVER = '" + $Server + "';`r`nwindow.VYNK_TEXT_SYNC = false;") -Encoding UTF8
+  $textFlag = if ($TextSync) { 'true' } else { 'false' }
+  $textNote = if ($TextSync) { 'on' } else { 'off' }
+  Set-Content -LiteralPath $configPath -Value ("window.VYNK_DEFAULT_SERVER = '" + $Server + "';`r`nwindow.VYNK_TEXT_SYNC = " + $textFlag + ";") -Encoding UTF8
   if ([string]::IsNullOrWhiteSpace($Server)) {
-    Ok 'server = (none preset - editors enter the relay url in the panel)'
+    Ok ('server = (none preset - editors enter the relay url in the panel), text sync ' + $textNote)
   } else {
-    Ok ('server = ' + $Server + ', text sync off')
+    Ok ('server = ' + $Server + ', text sync ' + $textNote)
   }
 } catch {
   Bad ('could not write config: ' + $_.Exception.Message)
@@ -151,7 +154,7 @@ if ($failures -eq 0) {
   Write-Host '  1. Start After Effects (if it was open, restart it fully).'
   Write-Host '  2. Window > Extensions > Vynk.'
   Write-Host '  3. Enter your team''s relay url, your name + the room code, then join.'
-  Write-Host ('  4. The panel log should start with: panel v' + $pkgVersion + ' starting ... text=off')
+  Write-Host ('  4. The panel log should start with: panel v' + $pkgVersion + ' starting ... text=' + $textNote)
 } else {
   Write-Host ("Install finished with $failures problem(s) - send this window to Andrew.") -ForegroundColor Red
 }

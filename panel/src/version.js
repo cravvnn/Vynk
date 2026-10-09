@@ -1,1 +1,1 @@
-window.VYNK_VERSION = '0.7.0';
+window.VYNK_VERSION = '0.7.1';
