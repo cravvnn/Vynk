@@ -46,6 +46,14 @@ function ignoreForPackage(src) {
   );
 }
 
+function copyFile(src, dest) {
+  cpSync(src, dest, { preserveTimestamps: true });
+}
+
+function copyTree(src, dest) {
+  cpSync(src, dest, { recursive: true, filter: ignoreForPackage, preserveTimestamps: true });
+}
+
 function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex').toUpperCase();
 }
@@ -138,14 +146,14 @@ mkdirSync(stagePanel, { recursive: true });
 mkdirSync(stageServer, { recursive: true });
 
 console.log('\nAssembling the panel package...');
-cpSync(join(root, 'panel'), join(stagePanel, 'panel'), { recursive: true, filter: ignoreForPackage });
-cpSync(aexPath, join(stagePanel, 'vynk.aex'));
-cpSync(join(root, 'LICENSE'), join(stagePanel, 'LICENSE'));
-cpSync(join(root, 'tools', 'install-teammate.bat'), join(stagePanel, 'install.bat'));
-cpSync(join(root, 'tools', 'install-teammate.ps1'), join(stagePanel, 'install.ps1'));
-cpSync(join(root, 'tools', 'uninstall-teammate.bat'), join(stagePanel, 'uninstall.bat'));
-cpSync(join(root, 'tools', 'uninstall-teammate.ps1'), join(stagePanel, 'uninstall.ps1'));
-cpSync(join(root, 'tools', 'diagnose-install.ps1'), join(stagePanel, 'diagnose.ps1'));
+copyTree(join(root, 'panel'), join(stagePanel, 'panel'));
+copyFile(aexPath, join(stagePanel, 'vynk.aex'));
+copyFile(join(root, 'LICENSE'), join(stagePanel, 'LICENSE'));
+copyFile(join(root, 'tools', 'install-teammate.bat'), join(stagePanel, 'install.bat'));
+copyFile(join(root, 'tools', 'install-teammate.ps1'), join(stagePanel, 'install.ps1'));
+copyFile(join(root, 'tools', 'uninstall-teammate.bat'), join(stagePanel, 'uninstall.bat'));
+copyFile(join(root, 'tools', 'uninstall-teammate.ps1'), join(stagePanel, 'uninstall.ps1'));
+copyFile(join(root, 'tools', 'diagnose-install.ps1'), join(stagePanel, 'diagnose.ps1'));
 writeFileSync(join(stagePanel, 'enable-cep-debug-mode.reg'), cepReg);
 writeFileSync(join(stagePanel, 'README.txt'), panelReadme);
 writeFileSync(join(stagePanel, 'INSTALL.txt'), panelInstall);
@@ -153,11 +161,11 @@ writeFileSync(join(stagePanel, 'VERSION'), version + '\n');
 
 console.log('Assembling the server package...');
 for (const file of ['.dockerignore', 'docker-compose.yml', 'package.json', 'package-lock.json', 'LICENSE']) {
-  cpSync(join(root, file), join(stageServer, file));
+  copyFile(join(root, file), join(stageServer, file));
 }
-cpSync(join(root, 'deploy'), join(stageServer, 'deploy'), { recursive: true, filter: ignoreForPackage });
-cpSync(join(root, 'server'), join(stageServer, 'server'), { recursive: true, filter: ignoreForPackage });
-cpSync(join(root, 'shared'), join(stageServer, 'shared'), { recursive: true, filter: ignoreForPackage });
+copyTree(join(root, 'deploy'), join(stageServer, 'deploy'));
+copyTree(join(root, 'server'), join(stageServer, 'server'));
+copyTree(join(root, 'shared'), join(stageServer, 'shared'));
 writeFileSync(join(stageServer, 'VERSION'), version + '\n');
 
 console.log('Compressing...');
