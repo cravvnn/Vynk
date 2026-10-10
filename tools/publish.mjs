@@ -46,8 +46,8 @@ function kb(bytes) {
   return Math.round(bytes / 1024) + ' KB';
 }
 
-function changelogSection(ver) {
-  const path = join(root, 'CHANGELOG.md');
+function sectionFrom(file, ver) {
+  const path = join(root, file);
   if (!existsSync(path)) return '';
   const lines = readFileSync(path, 'utf8').split(/\r?\n/);
   const start = lines.findIndex((l) => l.startsWith(`## [${ver}]`));
@@ -60,7 +60,9 @@ function changelogSection(ver) {
   return out.join('\n').trim();
 }
 
-const highlights = changelogSection(version);
+// Prefer the curated, user-facing bullets in RELEASE_NOTES.md; fall back to the
+// technical changelog section if a version has no entry there.
+const highlights = sectionFrom('RELEASE_NOTES.md', version) || sectionFrom('CHANGELOG.md', version);
 
 const notes = `# Vynk ${version}
 
@@ -68,7 +70,7 @@ Real-time collaboration for Adobe After Effects. Vynk (Visual Link) syncs layers
 properties, keyframes, masks, effects and shape layers across editors, with live
 cursors and a shared base project - media never leaves your machine.
 
-${highlights ? `## Highlights\n\n${highlights}\n\n` : ''}## Downloads
+${highlights ? `## What's new\n\n${highlights}\n\n` : ''}## Downloads
 
 | File | Size | SHA-256 |
 |---|---|---|
