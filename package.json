@@ -17,6 +17,7 @@
     "install-panel": "powershell -ExecutionPolicy Bypass -File tools/dev-install.ps1",
     "set-version": "node tools/set-version.mjs",
     "package": "node tools/package.mjs",
+    "publish": "node tools/publish.mjs",
     "verify:ae": "node tools/ae-verify.mjs"
   },
   "devDependencies": {
