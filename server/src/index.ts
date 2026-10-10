@@ -53,6 +53,10 @@ interface Room {
   // .aep over HTTP (keeps the base URL from being guessable from the room code).
   token: string;
   base: BaseInfo | null;
+  // Op-log sequence at the moment the current base was uploaded. Late joiners
+  // only need the ops after this point (the base already contains everything
+  // before it), so `welcome.ops` is filtered to seq > baseSeq.
+  baseSeq: number;
   lastBasePut: number;
   peers: Map<string, Peer>;
   locks: Map<string, string>;
@@ -186,6 +190,22 @@ async function loadBaseMeta(code: string): Promise<BaseInfo | null> {
   return null;
 }
 
+async function loadBaseSeq(code: string): Promise<number> {
+  try {
+    const n = Number((await readFile(path.join(BASE_DIR, `${code}.seq`), 'utf8')).trim());
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function saveBaseSeq(code: string, seq: number): Promise<void> {
+  try {
+    await mkdir(BASE_DIR, { recursive: true });
+    await writeFile(path.join(BASE_DIR, `${code}.seq`), String(seq));
+  } catch {}
+}
+
 // Dedupes concurrent creations for the same code: without this, N peers joining
 // at the same instant each miss `rooms.get` during the await and create N Room
 // objects with the same code (different tokens), so they never see each other.
@@ -200,12 +220,14 @@ async function getRoom(code: string): Promise<Room> {
     try {
       const log = await loadLog(code);
       const base = await loadBaseMeta(code);
+      const baseSeq = base ? await loadBaseSeq(code) : 0;
       const persisted = await loadToken(code);
       const token = persisted ?? randomUUID().replace(/-/g, '').slice(0, 24);
       const room: Room = {
         code,
         token,
         base,
+        baseSeq,
         lastBasePut: 0,
         peers: new Map(),
         locks: new Map(),
@@ -303,7 +325,7 @@ async function handleHello(peer: Peer, msg: Extract<NonNullable<ReturnType<typeo
     room: room.code,
     seq: room.seq,
     members,
-    ops: room.log.slice(-MAX_OPS_IN_WELCOME),
+    ops: room.log.filter((o) => o.seq > room.baseSeq).slice(-MAX_OPS_IN_WELCOME),
     token: room.token,
     base: room.base,
   });
@@ -574,6 +596,10 @@ const httpServer = createServer((req, res) => {
         await writeFile(baseFile(room.code), body);
         await writeFile(path.join(BASE_DIR, `${room.code}.json`), JSON.stringify(meta));
         room.base = meta;
+        // Everything up to now is baked into this base; late joiners only need
+        // the ops after this seq.
+        room.baseSeq = room.seq;
+        await saveBaseSeq(room.code, room.baseSeq);
         broadcast(room, { t: 'base', base: meta });
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, base: meta }));

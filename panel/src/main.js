@@ -121,7 +121,11 @@
     seenOps: {},
     seenOpCount: 0,
     everConnected: false,
-    outbox: []
+    outbox: [],
+    pendingReplay: null,
+    baseOpened: false,
+    replayApplied: false,
+    catchupLogged: false
   };
 
   var logBuffer = [];
@@ -307,6 +311,7 @@
       state.textDebounce = {};
       state.roomToken = '';
       state.baseInfo = null;
+      state.baseOpened = false;
       renderBase();
       setStatus('', 'offline');
       $('connectBtn').textContent = 'join';
@@ -355,7 +360,14 @@
         setStatus('on', 'room ' + msg.room);
         log('joined room ' + msg.room + ' with ' + msg.members.length + ' member(s), ' + msg.ops.length + ' op(s) in log');
         if (msg.ops.length > 0) {
-          log('note: room already has ' + msg.ops.length + ' edit(s) from before you joined - they are NOT auto-applied yet, so make sure you opened the exact same project file');
+          state.pendingReplay = msg.ops;
+          state.replayApplied = false;
+          state.catchupLogged = false;
+          log('note: room already has ' + msg.ops.length + ' edit(s) from before you joined');
+          tryApplyReplay();
+        } else {
+          state.pendingReplay = null;
+          state.replayApplied = false;
         }
         flushLogBuffer();
         flushOutbox();
@@ -369,6 +381,7 @@
         state.baseInfo = sanitizeBase(msg.base);
         renderBase();
         log(msg.base ? 'room base project: ' + msg.base.name + ' (by ' + msg.base.uploadedBy + ')' : 'room base project cleared');
+        tryApplyReplay();
         return;
       }
       case 'presence': {
@@ -588,6 +601,66 @@
     delete state.fxStates[compId];
     delete state.textStates[compId];
     delete state.shapeStates[compId];
+  }
+
+  function localProjectOnBase() {
+    if (!state.baseInfo || !state.baseInfo.name) return false;
+    if (state.baseOpened) return true;
+    return state.projectName === state.baseInfo.name;
+  }
+
+  function hasDivergenceForComp(compId) {
+    for (var id in state.members) {
+      if (id === state.selfId) continue;
+      var m = state.members[id];
+      if (m.compId && compId && m.compId === compId && state.divergedWith[id]) return true;
+    }
+    return false;
+  }
+
+  function tryApplyReplay() {
+    if (!state.pendingReplay || state.pendingReplay.length === 0) return;
+    if (state.replayApplied) return;
+    if (!inAE || !cs) return;
+    if (state.stamping || state.polling) return;
+    if (hasDivergence()) {
+      if (!state.catchupLogged) {
+        state.catchupLogged = true;
+        log('catch-up held: your project structure differs from a teammate - open the same project file');
+      }
+      return;
+    }
+    if (!localProjectOnBase()) {
+      if (!state.catchupLogged) {
+        state.catchupLogged = true;
+        log('catch-up held: click "get base" (or open the shared base) to receive the ' + state.pendingReplay.length + ' earlier edit(s) safely');
+      }
+      return;
+    }
+    state.replayApplied = true;
+    var logged = state.pendingReplay;
+    state.pendingReplay = null;
+    log('catching up: applying ' + logged.length + ' earlier edit(s)');
+    var applied = 0;
+    var failed = 0;
+    for (var i = 0; i < logged.length; i++) {
+      var entry = logged[i];
+      var op = entry && entry.op ? entry.op : entry;
+      if (!op || !op.opId) continue;
+      if (state.seenOps[op.opId]) continue;
+      state.seenOps[op.opId] = 1;
+      if (op.target && op.target.comp) invalidateCompBaselines(op.target.comp);
+      if (op.kind === 'set' && op.path === 'textDoc' && !textSyncEnabled()) continue;
+      applied++;
+      cs.evalScript('collab.applyOp(' + JSON.stringify(JSON.stringify(op)) + ')', function (res) {
+        if (res && res.indexOf('"ok":false') >= 0) {
+          failed++;
+          if (failed <= 3) log('catch-up apply failed: ' + String(res).slice(0, 80));
+        }
+      });
+    }
+    state.lastChangeAt = Date.now();
+    log('catch-up: ' + applied + ' edit(s) applied');
   }
 
   function applyRemoteOp(op) {
@@ -816,7 +889,9 @@
       cs.evalScript('(function(){try{app.open(' + jsx + ');return "opened";}catch(e){return "ERR "+e.toString();}})()', function (res) {
         if (res === 'opened') {
           resetBaselines();
+          state.baseOpened = true;
           log('base opened - sync baseline reset');
+          tryApplyReplay();
         }
         log('open base: ' + res + ' (' + dest + ')');
       });
@@ -1046,6 +1121,7 @@
             }
             state.projectName = info.projectName || state.projectName || '';
             state.projectPath = newPath || state.projectPath || '';
+            tryApplyReplay();
             ok = true;
           } catch (e) {}
         }
@@ -1559,6 +1635,7 @@
     state.compHash = '';
     state.divergedWith = {};
     state.divergenceLogged = false;
+    state.baseOpened = false;
     state.keysOmittedWarned = false;
     state.lastChangeAt = Date.now();
   }

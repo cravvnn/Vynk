@@ -4,6 +4,18 @@ All notable changes to Vynk are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-10-09
+
+### Added
+
+- **Safe late-join catch-up.** A client joining after edits have started now applies the
+  room's buffered ops automatically - but only when it is provably on the shared base
+  project (it opened the base, or its project matches the base name) and there is no
+  structural divergence. Otherwise catch-up is held with a clear log line. The relay
+  filters `welcome.ops` to everything after the base upload, so the base is never
+  double-applied, and already-seen ops (by `opId`) are skipped, which also makes
+  reconnect catch-up work.
+
 ## [0.7.2] - 2026-10-09
 
 Apply-path fixes found by the new headless After Effects harness (44 checks, all green).
