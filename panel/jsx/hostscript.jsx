@@ -326,6 +326,16 @@ var collab = (function () {
     };
   }
 
+  // AE's mask/shape setValue needs a real Shape instance, not a plain object.
+  function toShape(value) {
+    var s = new Shape();
+    s.vertices = normPoints(value.vertices);
+    s.inTangents = normPoints(value.inTangents);
+    s.outTangents = normPoints(value.outTangents);
+    s.closed = value.closed === true;
+    return s;
+  }
+
   function normVal(value) {
     if (value === null || value === undefined) return null;
     if (typeof value === 'number') return value;
@@ -595,7 +605,11 @@ var collab = (function () {
         try { prop.name = String(node.name); } catch (e2) {}
       }
       if (node.children && node.children.length > 0) {
-        buildShapeTree(prop, node.children, budget);
+        // Shape items live inside a group's "ADBE Vectors Group" (Contents), not
+        // on the group itself; adding them to the group silently fails.
+        var contents = null;
+        try { contents = prop.property('ADBE Vectors Group'); } catch (e2) { contents = null; }
+        buildShapeTree(contents || prop, node.children, budget);
       } else if (node.prop) {
         applySinglePropSpec(prop, node.prop);
       }
@@ -804,7 +818,16 @@ var collab = (function () {
       if (value && value.length !== undefined) return value[0];
       return Number(value);
     }
-    if (!value || value.length === undefined) return null;
+    if (!value || value.length === undefined) {
+      // A scalar assigned to a dimensioned property (e.g. mask feather is [x,y]):
+      // expand it across every dimension instead of rejecting it.
+      if (typeof value === 'number') {
+        var fill = [];
+        for (var j = 0; j < cur.length; j++) fill.push(value);
+        return fill;
+      }
+      return null;
+    }
     var out = [];
     for (var i = 0; i < cur.length; i++) out.push(i < value.length ? value[i] : cur[i]);
     return out;
@@ -835,7 +858,7 @@ var collab = (function () {
     if (info.field === 'path') {
       var shapeProp = mask.property('ADBE Mask Shape');
       if (!shapeProp) return respond(false, 'mask shape missing');
-      shapeProp.setValue(op.value);
+      shapeProp.setValue(toShape(op.value));
       return respond(true, null);
     }
     if (info.field === 'maskMode') { try { mask.maskMode = Number(op.value) || 0; } catch (e2) {} return respond(true, null); }
@@ -878,9 +901,9 @@ var collab = (function () {
       if (shapeProp) {
         try {
           if (d.path.keys && d.path.keys.length > 0) {
-            for (var k = 0; k < d.path.keys.length; k++) shapeProp.setValueAtTime(d.path.keys[k].t, d.path.keys[k].v);
+            for (var k = 0; k < d.path.keys.length; k++) shapeProp.setValueAtTime(d.path.keys[k].t, toShape(d.path.keys[k].v));
           } else if (d.path.value !== undefined) {
-            shapeProp.setValue(d.path.value);
+            shapeProp.setValue(toShape(d.path.value));
           }
         } catch (e8) {}
       }
@@ -929,23 +952,23 @@ var collab = (function () {
       return respond(true, null);
     }
     if (op.path === 'motionBlur') {
-      try { layer.motionBlur = Boolean(op.value); } catch (eMB) { return respond(false, 'motionBlur set failed'); }
+      try { layer.motionBlur = Boolean(op.value); } catch (eMB) { return respond(false, 'motionBlur set failed: ' + eMB.toString()); }
       return respond(true, null);
     }
     if (op.path === 'frameBlending') {
-      try { layer.frameBlending = Boolean(op.value); } catch (eFB) { return respond(false, 'frameBlending set failed'); }
+      try { layer.frameBlending = Boolean(op.value); } catch (eFB) { return respond(false, 'frameBlending set failed: ' + eFB.toString()); }
       return respond(true, null);
     }
     if (op.path === 'frameBlendingType') {
-      try { layer.frameBlendingType = Number(op.value) || 0; } catch (eFBT) { return respond(false, 'frameBlendingType set failed'); }
+      try { layer.frameBlendingType = Number(op.value) || 0; } catch (eFBT) { return respond(false, 'frameBlendingType set failed: ' + eFBT.toString()); }
       return respond(true, null);
     }
     if (op.path === 'trkMatte') {
-      try { layer.isTrackMatte = Boolean(op.value); } catch (e2) { return respond(false, 'trkMatte set failed'); }
+      try { layer.isTrackMatte = Boolean(op.value); } catch (e2) { return respond(false, 'trkMatte set failed: ' + e2.toString()); }
       return respond(true, null);
     }
     if (op.path === 'trkType') {
-      try { layer.trackMatteType = Number(op.value) || 0; } catch (e3) { return respond(false, 'trkType set failed'); }
+      try { layer.trackMatteType = Number(op.value) || 0; } catch (e3) { return respond(false, 'trkType set failed: ' + e3.toString()); }
       return respond(true, null);
     }
     if (op.path === 'name') { layer.name = String(op.value); return respond(true, null); }
@@ -1047,6 +1070,20 @@ var collab = (function () {
     return null;
   }
 
+  function findChildByName(group, name) {
+    var n = 0;
+    try { n = group.numProperties; } catch (e) { return null; }
+    for (var i = 1; i <= n; i++) {
+      var child = null;
+      try { child = group.property(i); } catch (e2) { continue; }
+      if (!child) continue;
+      var nm = '';
+      try { nm = child.name; } catch (e3) {}
+      if (nm === name) return child;
+    }
+    return null;
+  }
+
   function resolvePropPath(root, pathStr) {
     var parts = String(pathStr || '').split('/');
     var cur = root;
@@ -1054,13 +1091,16 @@ var collab = (function () {
       var key = parts[i];
       if (!key) return null;
       var next = null;
-      try {
-        if (key.charAt(0) === '#') next = cur.property(Number(key.substring(1)));
-        else next = cur.property(key);
-      } catch (e) {
-        next = null;
+      if (key.charAt(0) === '#') {
+        try { next = cur.property(Number(key.substring(1))); } catch (e) { next = null; }
+      } else {
+        // Match by property name, by matchName, then by display name. AE param
+        // matchNames contain spaces (e.g. "ADBE Glow 2-0001"), which name lookups
+        // can miss, so the matchName/name scans are required, not just a fallback.
+        try { next = cur.property(key); } catch (e0) { next = null; }
+        if (!next) next = findChildByMatchName(cur, key);
+        if (!next) next = findChildByName(cur, key);
       }
-      if (!next) next = findChildByMatchName(cur, key);
       if (!next) return null;
       cur = next;
     }
@@ -1491,7 +1531,7 @@ var collab = (function () {
       if (op.kind === 'add') return applyAdd(targetComp, op);
       return respond(false, 'unsupported op ' + op.kind);
     } catch (e) {
-      return respond(false, 'exception: ' + e.toString());
+      return respond(false, 'exception: ' + e.toString() + ' @' + (e.line !== undefined ? e.line : '?'));
     }
   }
 
