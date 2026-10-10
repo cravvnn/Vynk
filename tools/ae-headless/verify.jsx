@@ -304,6 +304,30 @@
       return true;
     });
 
+    check("addKey bezier with temporal ease", function () {
+      var r = apply({
+        opId: "k-ease",
+        kind: "addKey",
+        target: { comp: compId, layer: sidA },
+        path: "transform.position",
+        value: [230, 230],
+        time: 7,
+        interp: { inType: 6612, outType: 6612 },
+        ease: { "in": [[10, 33.33], [10, 33.33]], "out": [[20, 50], [20, 50]] }
+      });
+      var kp = layerBySid(snapshot(), sidA).transform.position;
+      var k = null;
+      for (var q = 0; q < kp.keys.length; q++) if (Math.abs(kp.keys[q].t - 7) < 1e-4) k = kp.keys[q];
+      if (!r.ok) return JSON.stringify(r);
+      if (!k) return "key at t=7 missing";
+      // AE recomputes temporal eases on a spatial (position) key to keep the
+      // motion path continuous, so the exact speed won't round-trip - just
+      // confirm an ease rode along.
+      if (!k.inEase || !k.inEase.length) return "inEase empty";
+      if (!k.outEase || !k.outEase.length) return "outEase empty";
+      return true;
+    });
+
     check("setKey at t=2", function () {
       var r = apply({ opId: "k3", kind: "setKey", target: { comp: compId, layer: sidA }, path: "transform.position", value: [50, 60], time: 2 });
       var kp = layerBySid(snapshot(), sidA).transform.position;
@@ -522,6 +546,18 @@
       return true;
     });
 
+    check("addMask with keyframed path", function () {
+      var s1 = { vertices: [[0, 0], [100, 0], [100, 100]], inTangents: [[0, 0], [0, 0], [0, 0]], outTangents: [[0, 0], [0, 0], [0, 0]], closed: true };
+      var s2 = { vertices: [[0, 0], [300, 0], [300, 300]], inTangents: [[0, 0], [0, 0], [0, 0]], outTangents: [[0, 0], [0, 0], [0, 0]], closed: true };
+      var r = apply({ opId: "m-kf", kind: "addMask", target: { comp: compId, layer: sidA }, path: "mask:1", value: { name: "KF Mask", path: { keys: [{ t: 0, v: s1 }, { t: 2, v: s2 }] } } });
+      var l = layerBySid(snapshot(), sidA);
+      if (!r.ok) return JSON.stringify(r);
+      var m = l.masks[l.masks.length - 1];
+      if (!m || !m.path) return "mask/path missing";
+      if (m.path.numKeys < 2) return "numKeys=" + m.path.numKeys;
+      return true;
+    });
+
     // ---- add layer variants + shape/text --------------------------------------
     check("add solid is idempotent by name", function () {
       var r1 = addSolid("Idem Solid", 1);
@@ -537,6 +573,25 @@
       var r = apply({ opId: "add-adj", kind: "add", target: { comp: compId }, value: { name: "Adj", type: "adjustment", index: 1, enabled: true } });
       if (!r.ok) return JSON.stringify(r);
       if (!layerByName(snapshot(), "Adj")) return "not found";
+      return true;
+    });
+
+    check("add precomp layer", function () {
+      var inner = app.project.items.addComp("PreComp Inner", 640, 480, 1, 5, 30);
+      inner.layers.addSolid([0.5, 0.5, 0.5], "inner layer", 100, 100, 1);
+      var sourceKey = inner.id + "|" + inner.name;
+      var r = apply({ opId: "add-pre", kind: "add", target: { comp: compId }, value: { name: "Precomp L", type: "comp", sourceComp: sourceKey, index: 1, enabled: true } });
+      if (!r.ok) return JSON.stringify(r);
+      var l = layerByName(snapshot(), "Precomp L");
+      if (!l) return "precomp layer not found";
+      if (l.avKind !== "comp") return "avKind=" + l.avKind;
+      if (l.sourceComp !== sourceKey) return "sourceComp=" + l.sourceComp;
+      return true;
+    });
+
+    check("add precomp with bad source rejected", function () {
+      var r = apply({ opId: "add-pre-bad", kind: "add", target: { comp: compId }, value: { name: "Bad Precomp", type: "comp", sourceComp: "999999|Nope", index: 1 } });
+      if (r.ok !== false) return "expected failure, got " + JSON.stringify(r);
       return true;
     });
 
