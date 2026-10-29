@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Syntax gates
+        shell: pwsh
+        run: |
+          Get-ChildItem panel/src/*.js | ForEach-Object { node --check $_.FullName }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Copy-Item panel/jsx/hostscript.jsx "$env:TEMP/hostscript.js" -Force
+          node --check "$env:TEMP/hostscript.js"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node tools/check-es3.mjs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node tools/check-es3.mjs tools/ae-headless/verify.jsx
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Relay endpoint tests
+        run: npm run test:base
+
+      - name: Soak (30s)
+        run: node tools/soak-system.mjs 0.5 3
+
+      - name: Start relay and run smoke
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath node -ArgumentList 'server/dist/index.js' -PassThru -WindowStyle Hidden
+          $proc.Id | Out-File -FilePath relay.pid -Encoding ascii
+          $healthy = $false
+          for ($i = 0; $i -lt 40; $i++) {
+            try {
+              $r = Invoke-RestMethod http://127.0.0.1:8787/health -TimeoutSec 2
+              if ($r.ok) { $healthy = $true; break }
+            } catch { Start-Sleep -Milliseconds 500 }
+          }
+          if (-not $healthy) { throw 'relay did not become healthy' }
+          npm run smoke
+          if ($LASTEXITCODE -ne 0) { throw 'smoke failed' }
+
+      - name: Stop relay
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path relay.pid) {
+            $id = Get-Content relay.pid
+            Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+          }
+
+  package-portability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The native binary is built on Windows; a stand-in is enough to exercise
+      # the packaging pipeline and the archive layout.
+      - name: Stand-in native binary
+        run: mkdir -p aegp/build/Release && head -c 1024 /dev/urandom > aegp/build/Release/vynk.aex
+
+      - name: Package
+        run: npm run package -- --skip-tests
+
+      - name: Assert the server zip unpacks on Linux
+        run: |
+          set -euo pipefail
+          V=$(node -p "require('./package.json').version")
+          ZIP="dist/Vynk-$V-server.zip"
+          if unzip -Z1 "$ZIP" | grep -q '\\'; then
+            echo "server zip contains backslash entry names"
+            exit 1
+          fi
+          rm -rf /tmp/pkg
+          unzip -q "$ZIP" -d /tmp/pkg
+          test -f /tmp/pkg/server/Dockerfile
+          test -f /tmp/pkg/deploy/Caddyfile
+          test -f /tmp/pkg/shared/protocol/src/index.ts
+          echo "layout ok"

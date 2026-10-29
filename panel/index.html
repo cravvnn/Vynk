@@ -31,6 +31,7 @@
   .grow { flex: 1; display: flex; flex-direction: column; min-height: 90px; }
   .log { flex: 1; overflow-y: auto; background: #161616; border: 1px solid #333; border-radius: 3px; padding: 4px 6px; font: 10px Consolas, monospace; color: #9c9c9c; }
   .log div { white-space: nowrap; }
+  .health { font: 10px Consolas, monospace; color: #6f6f6f; padding: 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -41,6 +42,7 @@
     <button id="copyBtn" class="ghost" title="copy invite text">invite</button>
     <span id="hostText" class="muted">browser</span>
   </div>
+  <div id="healthEl" class="health">sync: idle</div>
   <div class="row"><input id="serverInput" type="text" placeholder="relay url, e.g. wss://relay.example.com/ws"></div>
   <div class="row">
     <input id="roomInput" type="text" placeholder="room code" maxlength="8">

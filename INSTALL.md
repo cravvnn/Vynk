@@ -9,7 +9,8 @@
    prompt when it appears - the native overlay installs into After Effects' Plug-ins
    folder.
 4. Start After Effects and open **Window > Extensions > Vynk**.
-5. Enter your name and the room code, then click **join**.
+5. Enter your name and the room code, then click **join**. The relay is already
+   configured; change the server field only if you run your own.
 
 The panel log should start with:
 
@@ -30,7 +31,9 @@ panel v<version> starting ... text=off
 
 ## Relay (server)
 
-Requires Docker and a DNS name pointing at the host.
+Requires Docker on a VPS. `deploy/bootstrap.sh` installs it.
+
+**Domain + HTTPS** (recommended - `wss://`):
 
 ```bash
 cp deploy/.env.example .env      # set DOMAIN (and optionally ACME_EMAIL)
@@ -39,8 +42,16 @@ docker compose logs -f caddy     # certificate should be issued within a minute
 curl https://YOUR_DOMAIN/health
 ```
 
-Then set the panel's server field to `wss://YOUR_DOMAIN/ws`. See
-[deploy/README.md](deploy/README.md) for the base-project endpoints and limits.
+**IP only** (quick solo testing - plain `ws://`, unencrypted):
+
+```bash
+docker compose -f docker-compose.yml -f deploy/compose-ip.yml up -d relay
+curl http://VPS_IP:8787/health
+```
+
+Then set the panel's server field to `wss://YOUR_DOMAIN/ws` (or
+`ws://VPS_IP:8787/ws`). See [deploy/README.md](deploy/README.md) for the
+base-project endpoints, limits and update steps.
 
 ## Building from source
 

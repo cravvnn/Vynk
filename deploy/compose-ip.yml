@@ -1,0 +1,9 @@
+# IP-only mode: no domain, no certificate, no Caddy.
+#   docker compose -f docker-compose.yml -f deploy/compose-ip.yml up -d relay
+# Panel server field: ws://<VPS_IP>:8787/ws
+# Use this for solo testing. Switch to the full stack (domain + wss) before
+# handing the relay to anyone else.
+services:
+  relay:
+    ports:
+      - "8787:8787"

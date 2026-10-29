@@ -1,5 +1,6 @@
 {
-	email {$ACME_EMAIL}
+	# `{$VAR:default}` keeps this valid when ACME_EMAIL is unset.
+	email {$ACME_EMAIL:noreply@example.com}
 }
 
 {$DOMAIN} {

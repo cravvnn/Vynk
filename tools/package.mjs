@@ -6,9 +6,11 @@ import {
   cpSync,
   existsSync,
   statSync,
+  readdirSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { execSync, execFileSync } from 'node:child_process';
+import { deflateRawSync } from 'node:zlib';
+import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve, basename } from 'node:path';
 
@@ -58,14 +60,101 @@ function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex').toUpperCase();
 }
 
+// Minimal zip writer. Names must use forward slashes (APPNOTE), otherwise the
+// archive extracts as flat files with literal backslashes on Linux - which is
+// exactly where the server package gets unpacked.
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
 function zipDir(srcDir, destZip) {
   rmSync(destZip, { force: true });
-  const q = (p) => p.replace(/'/g, "''");
-  const script =
-    "Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
-    `[System.IO.Compression.ZipFile]::CreateFromDirectory('${q(srcDir)}','${q(destZip)}',` +
-    '[System.IO.Compression.CompressionLevel]::Optimal,$false)';
-  execFileSync('powershell', ['-NoProfile', '-Command', script], { stdio: 'inherit' });
+  const files = [];
+  const walk = (dir, prefix) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = join(dir, entry.name);
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(abs, rel);
+      else if (entry.isFile()) files.push({ abs, rel });
+    }
+  };
+  walk(srcDir, '');
+
+  const now = new Date();
+  const dosTime = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xffff;
+  const dosDate = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xffff;
+
+  const parts = [];
+  const central = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const data = readFileSync(file.abs);
+    const crc = crc32(data);
+    const packed = deflateRawSync(data, { level: 9 });
+    const name = Buffer.from(file.rel, 'utf8');
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt16LE(dosTime, 10);
+    local.writeUInt16LE(dosDate, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(packed.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(0, 28);
+    parts.push(local, name, packed);
+
+    const head = Buffer.alloc(46);
+    head.writeUInt32LE(0x02014b50, 0);
+    head.writeUInt16LE(20, 4);
+    head.writeUInt16LE(20, 6);
+    head.writeUInt16LE(0x0800, 8);
+    head.writeUInt16LE(8, 10);
+    head.writeUInt16LE(dosTime, 12);
+    head.writeUInt16LE(dosDate, 14);
+    head.writeUInt32LE(crc, 16);
+    head.writeUInt32LE(packed.length, 20);
+    head.writeUInt32LE(data.length, 24);
+    head.writeUInt16LE(name.length, 28);
+    head.writeUInt16LE(0, 30);
+    head.writeUInt16LE(0, 32);
+    head.writeUInt16LE(0, 34);
+    head.writeUInt16LE(0, 36);
+    head.writeUInt32LE(0, 38);
+    head.writeUInt32LE(offset, 42);
+    central.push(head, name);
+
+    offset += local.length + name.length + packed.length;
+  }
+
+  const dir = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(dir.length, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);
+
+  writeFileSync(destZip, Buffer.concat([...parts, dir, end]));
 }
 
 const cepReg = [
@@ -110,9 +199,10 @@ Install
   3. Start After Effects.
   4. Window > Extensions > Vynk.
   5. Enter your name and the room code, then click join.
+     The relay is preconfigured; change the server field only to use another one.
 
 The panel log should start with:
-  panel v${version} starting ... text=off
+  panel v${version} starting ... text=on
 
 Troubleshooting
   - Panel missing from the Extensions menu: run diagnose.ps1 and send the output

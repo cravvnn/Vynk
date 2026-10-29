@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { appendFile, mkdir, readFile, readdir, stat, rm, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
@@ -23,7 +24,7 @@ const CURSOR_FLUSH_MS = 33;
 const HELLO_TIMEOUT_MS = 5000;
 const MAX_PEERS_PER_ROOM = 16;
 const MAX_LOG_IN_MEMORY = 5000;
-const MAX_OPS_IN_WELCOME = 3000;
+const MAX_OPS_IN_WELCOME = Math.max(1, Number(process.env.MAX_OPS_IN_WELCOME ?? 3000));
 const MSG_LIMIT_PER_SEC = 400;
 const HEARTBEAT_MS = 30000;
 const MAX_LOG_FILE_BYTES = 50 * 1024 * 1024;
@@ -318,17 +319,30 @@ async function handleHello(peer: Peer, msg: Extract<NonNullable<ReturnType<typeo
   peer.room = room;
   room.peers.set(peer.id, peer);
   const members = [...room.peers.values()].filter((p) => p.id !== peer.id).map(publicInfo);
-  send(peer.socket, {
+  // A late joiner needs everything after the base. If the log cannot supply it
+  // (in-memory cap, file tail, or MAX_OPS_IN_WELCOME), say so instead of handing
+  // back a silently incomplete history.
+  const afterBase = room.log.filter((o) => o.seq > room.baseSeq);
+  const replayed = afterBase.slice(-MAX_OPS_IN_WELCOME);
+  const truncated =
+    room.seq > room.baseSeq && (replayed.length === 0 || replayed[0]!.seq > room.baseSeq + 1);
+  const welcome: S2C = {
     t: 'welcome',
     proto: PROTOCOL_VERSION,
     selfId: peer.id,
     room: room.code,
     seq: room.seq,
     members,
-    ops: room.log.filter((o) => o.seq > room.baseSeq).slice(-MAX_OPS_IN_WELCOME),
+    ops: replayed,
     token: room.token,
     base: room.base,
-  });
+    baseSeq: room.baseSeq,
+  };
+  if (truncated) {
+    welcome.truncated = true;
+    welcome.fromSeq = replayed.length > 0 ? replayed[0]!.seq : room.seq + 1;
+  }
+  send(peer.socket, welcome);
   broadcast(room, { t: 'presence', event: 'join', member: publicInfo(peer) }, peer.id);
 }
 
@@ -508,6 +522,48 @@ const httpServer = createServer((req, res) => {
     const room = rooms.get(code);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ code, exists: Boolean(room), members: room ? room.peers.size : 0, seq: room ? room.seq : 0 }));
+    return;
+  }
+  // Paged op history, streamed from the persisted log (not just the in-memory
+  // window), so a client that missed more than `welcome` can replay in order.
+  // All routes require the room token issued in `welcome`.
+  if (url.pathname === '/ops') {
+    const room = roomByToken(url.searchParams.get('token'));
+    if (!room) {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'forbidden' }));
+      return;
+    }
+    const after = Math.max(0, Number(url.searchParams.get('after') ?? 0) || 0);
+    const beforeRaw = Number(url.searchParams.get('before'));
+    const before = Number.isFinite(beforeRaw) && beforeRaw > 0 ? beforeRaw : Number.MAX_SAFE_INTEGER;
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 5000) || 0, 1), 20000);
+    res.writeHead(200, { 'content-type': 'application/x-ndjson', 'x-last-seq': String(room.seq) });
+    void (async () => {
+      let sent = 0;
+      try {
+        const rl = createInterface({
+          input: createReadStream(path.join(DATA_DIR, `${room.code}.jsonl`)),
+          crlfDelay: Infinity,
+        });
+        for await (const line of rl) {
+          if (!line.trim()) continue;
+          let entry: LoggedOp;
+          try {
+            entry = JSON.parse(line) as LoggedOp;
+          } catch {
+            continue;
+          }
+          if (entry.seq <= after || entry.seq >= before) continue;
+          res.write(line + '\n');
+          if (++sent >= limit) {
+            rl.close();
+            break;
+          }
+        }
+      } catch {}
+      res.end();
+    })();
     return;
   }
   // Base project sharing. All routes require the room token issued in `welcome`.

@@ -4,6 +4,62 @@ All notable changes to Vynk are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] - 2026-10-29
+
+### Added
+
+- **Live sync health.** The panel now shows a one-line readout - poll cost, ops sent/received,
+  apply failures, queue depth, reconnects and catch-up state - and exposes
+  `window.vynkHealth()` for support. Slow polls and failed applies are visible instead of
+  inferred from behaviour.
+- **Hop back in after a long absence.** The relay serves its persisted op log through
+  `GET /ops?token&after&before&limit`, and `welcome` now carries `baseSeq` plus
+  `truncated`/`fromSeq`. When the welcome replay is partial the panel fetches exactly the
+  missing post-base ops and applies them in order (up to 2,000; beyond that it asks for a
+  fresh base instead of silently under-syncing).
+- **No rubber-banding during a drag.** Remote edits to a property you are actively editing
+  wait for your gesture to settle (700 ms) and then apply the newest value per target, so
+  two people on the same slider see a clean last-writer-wins instead of a fight.
+- **The offline queue survives a restart.** Edits made while disconnected are persisted to
+  `localStorage` per server+room and removed as they are sent, so reloading the panel or
+  restarting AE no longer discards up to 500 pending ops.
+- **CI on GitHub Actions.** Every push builds, runs the syntax/ES3 gates, unit tests, relay
+  endpoint tests, a 30 s soak and smoke against a live relay; a Linux job packages the
+  server zip and asserts it unpacks with forward-slash paths.
+
+### Changed
+
+- `MAX_OPS_IN_WELCOME` is configurable (default 3000) for tests and small hosts.
+- `soak-system` scales its reconnect interval to the run length and stops reconnect
+  attempts just before shutdown, so short runs cover reconnects without false failures.
+
+## [0.7.4] - 2026-10-29
+
+### Changed
+
+- **The panel now defaults to the self-hosted relay** (`wss://vynk.allevilmc.com/ws`),
+  so a fresh install joins without editing the server field. A saved server value still
+  wins.
+
+### Fixed
+
+- **Relay image build from a clean checkout.** A copied `tsconfig.tsbuildinfo` made
+  `tsc -b` skip emitting `@vynk/protocol` while `.dockerignore` strips `dist/`, so the
+  Docker build failed with `TS2307: Cannot find module '@vynk/protocol'`. The build now
+  ignores `**/*.tsbuildinfo` and forces a full emit.
+- **Shared base projects survive container rebuilds.** `BASE_DIR` did not follow
+  `DATA_DIR`, so uploaded `.aep` files were written into the container layer and lost on
+  every redeploy. Compose now pins `DATA_DIR=/data/rooms` and `BASE_DIR=/data/bases` on
+  the `relay-data` volume.
+- **Caddy starts without `ACME_EMAIL`.** An empty email produced
+  `wrong argument count ... after 'email'` and the container refused to start; compose
+  and the Caddyfile now default it.
+
+- **Release archives are portable.** `.zip` entry names were written with Windows
+  backslashes, so the server package extracted on Linux as a flat pile of files called
+  `deploy\Caddyfile`. Packaging now writes spec-compliant forward-slash names and CI
+  unpacks the server zip on Linux on every push.
+
 ## [0.7.3] - 2026-10-09
 
 ### Added

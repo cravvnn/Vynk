@@ -6,7 +6,8 @@ COPY server/package.json server/
 RUN npm ci
 COPY shared/protocol shared/protocol
 COPY server server
-RUN npm run build
+# --force: never trust a copied tsbuildinfo; the image must emit its own dist.
+RUN npm run build -- --force
 
 FROM node:22-alpine
 ENV NODE_ENV=production PORT=8787 DATA_DIR=/data

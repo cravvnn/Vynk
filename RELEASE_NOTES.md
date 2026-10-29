@@ -4,6 +4,32 @@ User-facing notes for GitHub releases. `tools/publish.mjs` pulls the section for
 current version and drops it into the release description. Keep it plain-language and in
 the `- **Title.** *Before:* … *After:* …` style. Technical detail lives in CHANGELOG.md.
 
+## [0.7.5] - 2026-10-29
+
+- **You can hop back into a session after being away.** *Before:* if you missed more edits
+  than the relay replays, you silently got a partial history. *After:* the panel pulls the
+  missing edits and catches you up properly - and tells you when the gap is too big to
+  replay safely.
+- **Dragging a value no longer fights the other person.** *Before:* two people on the same
+  slider made the value jump back and forth. *After:* an incoming edit waits for your drag
+  to finish, then the newest value wins.
+- **The panel shows its own health.** *Before:* you found out sync was struggling by
+  noticing things were wrong. *After:* a live line shows poll cost, edits in/out, failed
+  applies and reconnect count.
+- **Edits made offline survive a restart.** *Before:* closing AE with unsynced edits lost
+  them. *After:* they are kept and sent when you reconnect.
+
+## [0.7.4] - 2026-10-29
+
+- **The panel points at the team relay already.** *Before:* you had to paste a server
+  address before joining. *After:* a fresh install just needs a name and a room code.
+- **Your saved relay is respected.** *Before:* there was nothing to keep. *After:* an
+  upgrade never overwrites the address you entered, so moving relays is a one-field edit.
+- **Shared projects survive server updates.** *Before:* the shared project file could
+  disappear whenever the relay was rebuilt. *After:* it is kept with the room data.
+- **The relay deploy actually builds.** *Before:* building the server image from a clean
+  checkout failed partway through. *After:* one command builds and starts it.
+
 ## [0.7.3] - 2026-10-09
 
 - **Joining a session late now catches you up.** *Before:* if a teammate had already been

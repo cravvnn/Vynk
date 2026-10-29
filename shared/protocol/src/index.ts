@@ -95,6 +95,13 @@ export type S2C =
       ops: LoggedOp[];
       token?: string;
       base?: BaseInfo | null;
+      // Op-log position of the current base, so a client can ask for exactly
+      // the ops that are missing from an incomplete replay.
+      baseSeq?: number;
+      // Set when the relay could not supply every op after the base, so a late
+      // joiner knows its replay is incomplete. Additive: older panels ignore it.
+      truncated?: boolean;
+      fromSeq?: number;
     }
   | { t: 'base'; base: BaseInfo | null }
   | { t: 'presence'; event: 'join' | 'leave'; member: MemberInfo }

@@ -34,11 +34,14 @@ timeline on purpose.
 3. Fully close After Effects and run `install.bat` - accept the admin prompt for the
    native overlay.
 4. Start After Effects and open **Window > Extensions > Vynk**.
-5. Enter your name and the room code, then click join.
+5. Enter your name and the room code, then click join. The relay is preconfigured;
+   change the server field only if you run your own.
 
 See [INSTALL.md](INSTALL.md) for details and troubleshooting.
 
 ## Run the relay
+
+Domain + HTTPS:
 
 ```bash
 cp deploy/.env.example .env      # set DOMAIN to a DNS name pointing at the host
@@ -46,8 +49,16 @@ docker compose up -d --build
 curl https://YOUR_DOMAIN/health
 ```
 
-Then point the panel's server field at `wss://YOUR_DOMAIN/ws`. See
-[deploy/README.md](deploy/README.md) for limits, endpoints and notes.
+IP only, for quick solo testing:
+
+```bash
+docker compose -f docker-compose.yml -f deploy/compose-ip.yml up -d relay
+curl http://VPS_IP:8787/health
+```
+
+Then point the panel's server field at `wss://YOUR_DOMAIN/ws` (or
+`ws://VPS_IP:8787/ws`). See [deploy/README.md](deploy/README.md) for setup,
+limits, endpoints and updates.
 
 ## Development
 

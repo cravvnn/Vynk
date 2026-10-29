@@ -99,6 +99,9 @@ async function baseRound() {
 }
 
 function reconnectRandom() {
+  // Never start a reconnect in the last few seconds: it would race the shutdown
+  // and report a bogus "closed before the connection was established".
+  if (Date.now() > endsAt - 3000) return;
   const i = (Math.random() * clients.length) | 0;
   clients[i].close();
   clients[i] = makeClient(i);
@@ -106,7 +109,7 @@ function reconnectRandom() {
 }
 
 const tBase = setInterval(() => { baseRound().catch((e) => stats.errors.push('base round:' + e.message)); }, 15000);
-const tRecon = setInterval(reconnectRandom, 30000);
+const tRecon = setInterval(reconnectRandom, Math.max(5000, Math.min(30000, (minutes * 60000) / 3)));
 const report = setInterval(async () => {
   const h = await req('GET', '/health');
   if (h.status === 200) {
@@ -121,6 +124,7 @@ const report = setInterval(async () => {
 }, 15000);
 
 const start = Date.now();
+const endsAt = start + minutes * 60 * 1000;
 setTimeout(async () => {
   clearInterval(tBase);
   clearInterval(tRecon);

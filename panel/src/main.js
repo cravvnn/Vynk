@@ -27,6 +27,9 @@
   var WATCHDOG_POLL_MS = 5000;
   var WATCHDOG_STAMP_MS = 4000;
   var FOCUS_QUEUE_DELAY_MS = 1500;
+// Remote edits to a target you are actively dragging wait this long after your
+// last local op, so a simultaneous drag cannot rubber-band mid-gesture.
+var GESTURE_HOLD_MS = 700;
   var MAX_COMP_STATES = 12;
   var BACKPRESSURE_LOW = 50000;
   var BACKPRESSURE_MEDIUM = 200000;
@@ -122,9 +125,21 @@
     seenOpCount: 0,
     everConnected: false,
     outbox: [],
+    outboxKey: '',
+    pollMs: 0,
+    applyFails: 0,
+    reconnects: 0,
+    localEditAt: {},
+    lastRxAt: 0,
+    catchupState: 'none',
     pendingReplay: null,
     baseOpened: false,
     replayApplied: false,
+    replayTruncated: false,
+    baseSeq: 0,
+    fromSeq: 0,
+    fetchingHistory: false,
+    historyFetchTried: false,
     catchupLogged: false
   };
 
@@ -246,13 +261,56 @@
 
   function send(msg) {
     if (state.ws && state.ws.readyState === 1) {
-      if (msg.t === 'op') state.opsSent++;
+      if (msg.t === 'op') {
+        state.opsSent++;
+        noteLocalGesture(msg.op);
+      }
       state.ws.send(JSON.stringify(msg));
       return;
     }
     if (msg.t === 'op' && state.everConnected) {
       if (state.outbox.length >= MAX_OUTBOX) state.outbox.shift();
       state.outbox.push(msg.op);
+      persistOutbox();
+    }
+  }
+
+  function outboxKey(server, room) {
+    return 'collab.outbox.' + (server || '') + '|' + (room || '');
+  }
+
+  // The offline queue survives a panel reload / AE restart. Ops are written
+  // through on every change and removed the moment they are sent, so a crash
+  // can lose an unsent edit but can never deliver one twice.
+  function persistOutbox() {
+    var key = state.outboxKey;
+    if (!key) return;
+    try {
+      if (state.outbox.length === 0) {
+        localStorage.removeItem(key);
+        return;
+      }
+      try {
+        localStorage.setItem(key, JSON.stringify({ ops: state.outbox }));
+      } catch (e) {
+        state.outbox = state.outbox.slice(-Math.max(1, Math.floor(state.outbox.length / 2)));
+        localStorage.setItem(key, JSON.stringify({ ops: state.outbox }));
+        log('note: offline queue trimmed to the newest ' + state.outbox.length + ' edit(s) to fit storage');
+      }
+    } catch (e) {}
+  }
+
+  function loadOutbox(key) {
+    try {
+      var saved = JSON.parse(localStorage.getItem(key) || 'null');
+      if (!saved || !saved.ops || !saved.ops.length) return [];
+      var ops = [];
+      for (var i = 0; i < saved.ops.length; i++) {
+        if (saved.ops[i] && saved.ops[i].opId) ops.push(saved.ops[i]);
+      }
+      return ops.slice(-MAX_OUTBOX);
+    } catch (e) {
+      return [];
     }
   }
 
@@ -260,6 +318,7 @@
     if (state.outbox.length === 0) return;
     var queued = state.outbox;
     state.outbox = [];
+    persistOutbox();
     for (var i = 0; i < queued.length; i++) send({ t: 'op', op: queued[i] });
     log('flushed ' + queued.length + ' edit(s) made while offline');
   }
@@ -275,6 +334,14 @@
     }
     var name = $('nameInput').value.trim() || 'anon';
     saveSettings();
+    state.outboxKey = outboxKey(url, room);
+    if (state.outbox.length === 0) {
+      var restored = loadOutbox(state.outboxKey);
+      if (restored.length > 0) {
+        state.outbox = restored;
+        log('restored ' + restored.length + ' unsent edit(s) from the last session');
+      }
+    }
     setStatus('warn', 'connecting');
     log('connecting to ' + url + ' as ' + name + ' into room ' + room);
     var ws;
@@ -319,6 +386,7 @@
       pushPeersToNative();
       if (wantConnected) {
         retryCount++;
+        state.reconnects = (state.reconnects || 0) + 1;
         var backoff = Math.min(RECONNECT_DELAY_MS * Math.min(retryCount, 5), 15000);
         log('reconnecting in ' + Math.round(backoff / 1000) + 's (attempt ' + retryCount + ')');
         setTimeout(function () { if (wantConnected) connect(); }, backoff);
@@ -337,6 +405,7 @@
   }
 
   function onMessage(msg) {
+    state.lastRxAt = Date.now();
     switch (msg.t) {
       case 'welcome': {
         state.connected = true;
@@ -344,6 +413,9 @@
         state.selfId = msg.selfId;
         state.room = msg.room;
         state.roomToken = msg.token || '';
+        state.baseSeq = typeof msg.baseSeq === 'number' ? msg.baseSeq : 0;
+        state.historyFetchTried = false;
+        state.fetchingHistory = false;
         state.baseInfo = sanitizeBase(msg.base);
         retryCount = 0;
         state.members = {};
@@ -359,8 +431,15 @@
         }
         setStatus('on', 'room ' + msg.room);
         log('joined room ' + msg.room + ' with ' + msg.members.length + ' member(s), ' + msg.ops.length + ' op(s) in log');
-        if (msg.ops.length > 0) {
-          state.pendingReplay = msg.ops;
+        state.replayTruncated = msg.truncated === true;
+        state.fromSeq = typeof msg.fromSeq === 'number' ? msg.fromSeq : 0;
+        if (state.replayTruncated) {
+          state.catchupLogged = true;
+          state.catchupState = 'held-truncated';
+          log('note: welcome replay is partial (' + msg.ops.length + ' recent edit(s)) - the rest will be fetched from the relay log');
+        }
+        if (msg.ops.length > 0 || msg.truncated) {
+          state.pendingReplay = msg.ops || [];
           state.replayApplied = false;
           state.catchupLogged = false;
           log('note: room already has ' + msg.ops.length + ' edit(s) from before you joined');
@@ -522,8 +601,34 @@
         scheduleQueueFlush();
         return;
       }
+      // Do not yank a value out from under a live drag: wait for the gesture to
+      // settle, then apply the newest remote value per target.
+      var now = Date.now();
+      for (var i = 0; i < state.remoteQueue.length; i++) {
+        var k = opKey(state.remoteQueue[i]);
+        if (k && now - (state.localEditAt[k] || 0) < GESTURE_HOLD_MS) {
+          scheduleQueueFlush();
+          return;
+        }
+      }
       flushRemoteQueue();
     }, FOCUS_QUEUE_DELAY_MS);
+  }
+
+  // Per-target key shared by the queue and the gesture hold. Structure/effect
+  // ops return '' and are never held.
+  function opKey(op) {
+    if (!op || !op.target) return '';
+    if (op.kind === 'set' || op.kind === 'setExpr') return op.target.layer + '|' + (op.path || '');
+    if (op.kind === 'addKey' || op.kind === 'setKey' || op.kind === 'removeKey') {
+      return op.target.layer + '|' + (op.path || '') + '|' + (op.time !== undefined ? Math.round(op.time * 10000) : '');
+    }
+    return '';
+  }
+
+  function noteLocalGesture(op) {
+    var k = opKey(op);
+    if (k) state.localEditAt[k] = Date.now();
   }
 
   function aeIsFocused() {
@@ -619,11 +724,17 @@
   }
 
   function tryApplyReplay() {
-    if (!state.pendingReplay || state.pendingReplay.length === 0) return;
+    if (!state.pendingReplay) return;
+    if (state.pendingReplay.length === 0 && !state.replayTruncated) return;
     if (state.replayApplied) return;
     if (!inAE || !cs) return;
     if (state.stamping || state.polling) return;
+    if (state.replayTruncated) {
+      state.catchupState = 'held-truncated';
+      return;
+    }
     if (hasDivergence()) {
+      state.catchupState = 'held-diverged';
       if (!state.catchupLogged) {
         state.catchupLogged = true;
         log('catch-up held: your project structure differs from a teammate - open the same project file');
@@ -631,13 +742,20 @@
       return;
     }
     if (!localProjectOnBase()) {
+      state.catchupState = 'held-base';
       if (!state.catchupLogged) {
         state.catchupLogged = true;
         log('catch-up held: click "get base" (or open the shared base) to receive the ' + state.pendingReplay.length + ' earlier edit(s) safely');
       }
       return;
     }
+    if (state.replayTruncated) {
+      state.catchupState = 'gap';
+      fetchMissingHistory();
+      return;
+    }
     state.replayApplied = true;
+    state.catchupState = 'applied';
     var logged = state.pendingReplay;
     state.pendingReplay = null;
     log('catching up: applying ' + logged.length + ' earlier edit(s)');
@@ -655,6 +773,7 @@
       cs.evalScript('collab.applyOp(' + JSON.stringify(JSON.stringify(op)) + ')', function (res) {
         if (res && res.indexOf('"ok":false') >= 0) {
           failed++;
+          state.applyFails = (state.applyFails || 0) + 1;
           if (failed <= 3) log('catch-up apply failed: ' + String(res).slice(0, 80));
         }
       });
@@ -683,6 +802,12 @@
       queueRemoteOp(op);
       return;
     }
+    var gestureKey = opKey(op);
+    if (gestureKey && Date.now() - (state.localEditAt[gestureKey] || 0) < GESTURE_HOLD_MS) {
+      queueRemoteOp(op);
+      scheduleQueueFlush();
+      return;
+    }
     try {
       cs.evalScript('collab.applyOp(' + JSON.stringify(JSON.stringify(op)) + ')', function (res) {
         if (res && res.indexOf('"ok":false') >= 0) {
@@ -692,6 +817,7 @@
               log('effect not installed here - skipping: ' + fxName);
             }
           } else {
+            state.applyFails = (state.applyFails || 0) + 1;
             logThrottled('applyfail:' + String(res).slice(0, 60), 'apply failed: ' + res, 3000);
           }
         } else if (!res && (state.applyLogCount || 0) < 5) {
@@ -788,6 +914,47 @@
     }
   }
 
+  // One-line live view of the sync pipeline. Kept deliberately compact so it can
+  // sit above the log without stealing space; window.vynkHealth() has the detail.
+  function renderHealth() {
+    var el = $('healthEl');
+    if (!el) return;
+    if (!state.connected) {
+      el.textContent = 'sync: offline' + (state.outbox.length ? ' - ' + state.outbox.length + ' unsent' : '');
+      return;
+    }
+    var age = state.lastRxAt ? Math.round((Date.now() - state.lastRxAt) / 1000) : 0;
+    var parts = [
+      'poll ' + (state.pollMs || 0) + 'ms',
+      'tx ' + state.opsSent,
+      'rx ' + state.opsReceived,
+      'fail ' + (state.applyFails || 0),
+      'q ' + state.remoteQueue.length,
+      're ' + (state.reconnects || 0),
+      'stop ' + state.pollScheduledDelay + 'ms',
+      'age ' + age + 's'
+    ];
+    if (state.catchupState !== 'none') parts.push('catchup ' + state.catchupState);
+    el.textContent = 'sync: ' + parts.join('  ');
+  }
+
+  window.vynkHealth = function () {
+    return {
+      connected: state.connected,
+      room: state.room,
+      pollMs: state.pollMs,
+      pollDelayMs: state.pollScheduledDelay,
+      opsSent: state.opsSent,
+      opsReceived: state.opsReceived,
+      applyFails: state.applyFails,
+      queued: state.remoteQueue.length,
+      outbox: state.outbox.length,
+      reconnects: state.reconnects,
+      catchup: state.catchupState,
+      base: state.baseInfo ? state.baseInfo.name : null
+    };
+  };
+
   function relayHttpBase() {
     var s = ($('serverInput').value || '').trim();
     s = s.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
@@ -818,9 +985,71 @@
     rs.pipe(req);
   }
 
-  // Stream the relay's base file to disk (no full-file buffering).
-  function httpGetToFile(pathAndQuery, destPath, cb) {
+  function httpGetText(pathAndQuery, cb) {
     var u;
+    try { u = new (require('url').URL)(relayHttpBase() + pathAndQuery); }
+    catch (e) { cb(new Error('bad server url')); return; }
+    var mod = u.protocol === 'https:' ? require('https') : require('http');
+    var finished = false;
+    function done(err, status, text) { if (finished) return; finished = true; cb(err, status, text); }
+    var req = mod.request(u, { method: 'GET' }, function (res) {
+      var chunks = [];
+      res.on('data', function (c) { chunks.push(c); });
+      res.on('end', function () { done(null, res.statusCode, Buffer.concat(chunks).toString('utf8')); });
+    });
+    req.on('error', function (e2) { done(e2); });
+    req.setTimeout(60000, function () { req.destroy(new Error('history request timed out')); });
+    req.end();
+  }
+
+  // The relay caps `welcome.ops`; pull the rest from the persisted log before
+  // giving up on catch-up. Only runs when the local project is provably on the
+  // shared base, so the ops are safe to apply.
+  var HISTORY_FETCH_LIMIT = 2000;
+  function fetchMissingHistory() {
+    if (state.fetchingHistory || state.historyFetchTried) return;
+    if (!state.roomToken || !state.baseSeq || !state.fromSeq) {
+      log('cannot recover the missing history - ask the host to "share base" again');
+      return;
+    }
+    var before = state.fromSeq;
+    state.fetchingHistory = true;
+    state.historyFetchTried = true;
+    log('history gap: fetching edits ' + (state.baseSeq + 1) + '-' + (before - 1) + ' from the relay...');
+    var q = '/ops?token=' + encodeURIComponent(state.roomToken) +
+      '&after=' + state.baseSeq + '&before=' + before + '&limit=' + (HISTORY_FETCH_LIMIT + 1);
+    httpGetText(q, function (err, status, text) {
+      state.fetchingHistory = false;
+      if (err || status !== 200) {
+        log('history fetch failed: ' + (err ? err.message : 'HTTP ' + status) + ' - ask the host to "share base" again');
+        return;
+      }
+      var lines = String(text || '').split('\n');
+      var ops = [];
+      for (var i = 0; i < lines.length; i++) {
+        if (!lines[i]) continue;
+        var entry;
+        try { entry = JSON.parse(lines[i]); } catch (e) { continue; }
+        if (entry && entry.seq && entry.op) ops.push(entry);
+      }
+      if (ops.length === 0) {
+        log('history fetch returned nothing - ask the host to "share base" again');
+        return;
+      }
+      if (ops.length > HISTORY_FETCH_LIMIT) {
+        log('history gap is too large to replay (' + ops.length + '+) - ask the host to "share base" again');
+        return;
+      }
+      state.replayTruncated = false;
+      state.catchupLogged = false;
+      state.pendingReplay = ops.concat(state.pendingReplay || []);
+      log('history gap filled: recovered ' + ops.length + ' edit(s)');
+      tryApplyReplay();
+    });
+  }
+
+  // Stream the relay's base file to disk (no full-file buffering).
+  function httpGetToFile(pathAndQuery, destPath, cb) {    var u;
     try { u = new (require('url').URL)(relayHttpBase() + pathAndQuery); }
     catch (e) { cb(new Error('bad server url')); return; }
     var mod = u.protocol === 'https:' ? require('https') : require('http');
@@ -1234,6 +1463,8 @@
         try {
         state.polling = false;
         state.pollCount = (state.pollCount || 0) + 1;
+        var tookMs = Date.now() - (state.pollStartedAt || Date.now());
+        state.pollMs = state.pollMs ? Math.round(state.pollMs * 0.8 + tookMs * 0.2) : tookMs;
         state.lastPollResult = String(res || '').slice(0, 140);
         if (state.pollCount <= 2) log('poll#' + state.pollCount + ' ' + String(res).slice(0, 90));
         var next = null;
@@ -1946,10 +2177,13 @@
     log('stats: ping=' + state.latencyMs + 'ms tx=' + state.opsSent + ' rx=' + state.opsReceived + ' queued=' + state.remoteQueue.length + ' native=' + (state.nativeMode ? 'on' : 'off') + ' hash=' + (state.projectHash || '-'));
   }, 30000);
 
+  setInterval(renderHealth, 1000);
+
   $('connectBtn').addEventListener('click', function () {
     if (state.connected) {
       wantConnected = false;
       state.outbox = [];
+      persistOutbox();
       disconnect();
       $('connectBtn').textContent = 'join';
     } else {

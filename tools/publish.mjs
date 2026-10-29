@@ -85,10 +85,10 @@ ${highlights ? `## What's new\n\n${highlights}\n\n` : ''}## Downloads
 2. Fully close After Effects, then run \`install.bat\` (accept the admin prompt for the
    native cursor overlay).
 3. Start After Effects and open **Window > Extensions > Vynk**.
-4. Enter your team's relay URL, your name and the room code, then click **join**.
+4. Enter your name and the room code, then click **join**.
 
-No relay is preconfigured - the panel needs your team's relay (\`wss://your-domain/ws\`).
-Text sync is on by default in this build.
+The relay is preconfigured (\`wss://vynk.allevilmc.com/ws\`); change the server field
+only if you run your own. Text sync is on by default in this build.
 
 ## Run the relay
 

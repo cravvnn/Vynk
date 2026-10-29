@@ -3,6 +3,7 @@ node_modules
 dist
 **/dist
 *.tsbuildinfo
+**/*.tsbuildinfo
 server/data
 helper/build
 helper/.vs
