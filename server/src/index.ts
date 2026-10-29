@@ -29,7 +29,7 @@ const MSG_LIMIT_PER_SEC = 400;
 const HEARTBEAT_MS = 30000;
 const MAX_LOG_FILE_BYTES = 50 * 1024 * 1024;
 const CLAIM_TTL_MS = Math.max(100, Number(process.env.CLAIM_TTL_MS ?? 4000));
-const MAX_TRACKED_TARGETS = 20000;
+const MAX_TRACKED_TARGETS = Math.max(2, Number(process.env.MAX_TRACKED_TARGETS ?? 20000));
 const LOG_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const BASE_DIR = process.env.BASE_DIR ?? path.join(__dirname, '..', 'data', 'bases');
@@ -410,8 +410,15 @@ function handleOp(peer: Peer, op: EditOp): void {
     room.claims.set(key, { owner: peer.id, expiresAt: nowMs() + CLAIM_TTL_MS });
     room.lastByTarget.set(key, logged);
     if (room.lastByTarget.size > MAX_TRACKED_TARGETS) {
-      const oldest = room.lastByTarget.keys().next().value;
-      if (oldest) room.lastByTarget.delete(oldest);
+      // Never evict a target that still has a live claim: it is the revert value
+      // a conflicting editor needs.
+      const now = nowMs();
+      for (const key of room.lastByTarget.keys()) {
+        if (room.lastByTarget.size <= MAX_TRACKED_TARGETS) break;
+        const claim = room.claims.get(key);
+        if (claim && claim.expiresAt > now) continue;
+        room.lastByTarget.delete(key);
+      }
     }
   }
   persist(room, logged);

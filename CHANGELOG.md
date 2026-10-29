@@ -4,6 +4,18 @@ All notable changes to Vynk are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.7] - 2026-10-29
+
+### Fixed
+
+- **A conflicting edit always has a value to revert to.** Eviction from the relay's
+  per-target map (`MAX_TRACKED_TARGETS`) now skips targets with a live claim, so a rejected
+  edit can no longer arrive without the winning op.
+- **New-keyframe conflicts undo cleanly.** If no winning op exists, an `addKey` rejection is
+  undone locally with its exact inverse (`removeKey` at the same time) instead of leaving
+  the keyframe in place. Anything still unrecoverable is counted as `desync` in the sync
+  health line.
+
 ## [0.7.6] - 2026-10-29
 
 ### Added

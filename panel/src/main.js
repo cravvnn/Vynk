@@ -131,6 +131,8 @@ var GESTURE_HOLD_MS = 700;
     claimLosses: 0,
     reconnects: 0,
     localEditAt: {},
+    lastSentOp: {},
+    desyncs: 0,
     lastRxAt: 0,
     catchupState: 'none',
     pendingReplay: null,
@@ -540,15 +542,16 @@ var GESTURE_HOLD_MS = 700;
         if (msg.code === 'locked' && msg.target) {
           state.claimLosses = (state.claimLosses || 0) + 1;
           var claimOwner = (state.members[msg.owner] && state.members[msg.owner].name) || msg.owner || 'someone';
-          var revert = msg.op && msg.op.op ? msg.op.op : null;
+          var revert = msg.op && msg.op.op ? msg.op.op : inverseOf(state.lastSentOp[msg.target]);
           if (revert) {
             logThrottled('claim:' + msg.target, 'edit held: ' + claimOwner + ' is changing this - your value was reverted', 4000);
             applyRemoteOp(revert);
           } else {
-            // Nothing to revert to (e.g. a brand-new keyframe). Adopt local state
-            // as the new baseline so the same op is not re-emitted forever.
+            state.desyncs = (state.desyncs || 0) + 1;
+            // Nothing to revert to. Adopt local state as the new baseline so the
+            // same op is not re-emitted forever.
             if (state.compId) invalidateCompBaselines(state.compId);
-            logThrottled('claim:' + msg.target, 'edit held: ' + claimOwner + ' is changing this - your value was not shared', 4000);
+            logThrottled('claim:' + msg.target, 'edit held: ' + claimOwner + ' is changing this - your value was not shared (re-open the project if it looks out of sync)', 4000);
           }
           return;
         }
@@ -644,7 +647,19 @@ var GESTURE_HOLD_MS = 700;
 
   function noteLocalGesture(op) {
     var k = opKey(op);
-    if (k) state.localEditAt[k] = Date.now();
+    if (!k) return;
+    state.localEditAt[k] = Date.now();
+    state.lastSentOp[k] = op;
+  }
+
+  // Best-effort local undo when the relay has no winning op to send back. Only
+  // an added keyframe has an unambiguous inverse.
+  function inverseOf(op) {
+    if (!op) return null;
+    if (op.kind === 'addKey') {
+      return { opId: 'undo-' + op.opId, kind: 'removeKey', target: op.target, path: op.path, time: op.time };
+    }
+    return null;
   }
 
   function aeIsFocused() {
@@ -946,6 +961,7 @@ var GESTURE_HOLD_MS = 700;
       'rx ' + state.opsReceived,
       'fail ' + (state.applyFails || 0),
       'held ' + (state.claimLosses || 0),
+      'desync ' + (state.desyncs || 0),
       'q ' + state.remoteQueue.length,
       're ' + (state.reconnects || 0),
       'stop ' + state.pollScheduledDelay + 'ms',
@@ -965,6 +981,7 @@ var GESTURE_HOLD_MS = 700;
       opsReceived: state.opsReceived,
       applyFails: state.applyFails,
       claimLosses: state.claimLosses,
+      desyncs: state.desyncs,
       queued: state.remoteQueue.length,
       outbox: state.outbox.length,
       reconnects: state.reconnects,

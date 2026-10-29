@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const PORT = Number(process.argv[2] ?? 8795);
-const TTL = 400;
+const TTL = 1500;
 let pass = 0, fail = 0;
 const ok = (l, c) => { console.log((c ? 'ok: ' : 'FAIL: ') + l); c ? pass++ : fail++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -18,6 +18,7 @@ const relay = spawn(process.execPath, ['server/dist/index.js'], {
     ...process.env,
     PORT: String(PORT),
     CLAIM_TTL_MS: String(TTL),
+    MAX_TRACKED_TARGETS: '3',
     DATA_DIR: path.join(tmp, 'rooms'),
     BASE_DIR: path.join(tmp, 'bases'),
   },
@@ -27,12 +28,12 @@ await new Promise((r) => setTimeout(r, 1500));
 
 const room = 'CLAM' + Math.floor(Math.random() * 900 + 100);
 
-function client(name) {
+function client(name, roomCode = room) {
   return new Promise((resolve) => {
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
     const c = { ws, name, errors: [], welcome: null };
     let ready = false;
-    ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', proto: 1, room, name, aeVersion: 'test' })));
+    ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', proto: 1, room: roomCode, name, aeVersion: 'test' })));
     ws.on('message', (raw) => {
       const m = JSON.parse(raw.toString());
       if (m.t === 'welcome') {
@@ -89,6 +90,21 @@ const late = await client('Late');
 const ids = late.welcome.ops.map((o) => o.op && o.op.opId);
 ok('rejected op never entered the log', !ids.includes('b1'));
 ok('accepted ops did enter the log', ids.includes('a1') && ids.includes('a2') && ids.includes('b4'));
+
+// A target with a live claim must never be evicted from the revert map, even
+// when the room keeps more targets than MAX_TRACKED_TARGETS.
+const evictRoom = 'EVIK' + Math.floor(Math.random() * 900 + 100);
+const e1 = await client('E1', evictRoom);
+const e2 = await client('E2', evictRoom);
+for (let i = 0; i < 6; i++) e1.ws.send(JSON.stringify({ t: 'op', op: op('e' + i, 'transform.p' + i, i) }));
+await sleep(250);
+const beforeE = e2.errors.length;
+e2.ws.send(JSON.stringify({ t: 'op', op: op('e-conflict', 'transform.p0', 99) }));
+await sleep(250);
+const evictErr = e2.errors.slice(beforeE).find((x) => x.code === 'locked');
+ok('live claim survives the target cap', Boolean(evictErr && evictErr.op && evictErr.op.op.opId === 'e0'));
+
+for (const c of [e1, e2]) c.ws.close();
 
 for (const c of [a, b, late]) c.ws.close();
 console.log(fail === 0 ? `PASS (room ${room})` : `FAILED (${fail})`);

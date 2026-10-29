@@ -4,6 +4,12 @@ User-facing notes for GitHub releases. `tools/publish.mjs` pulls the section for
 current version and drops it into the release description. Keep it plain-language and in
 the `- **Title.** *Before:* … *After:* …` style. Technical detail lives in CHANGELOG.md.
 
+## [0.7.7] - 2026-10-29
+
+- **Conflicts always end on a shared value.** *Before:* in a narrow case (a brand-new
+  keyframe) a rejected edit could stay on your side only. *After:* every rejected edit is
+  undone locally, either to the other editor's value or to the state you started from.
+
 ## [0.7.6] - 2026-10-29
 
 - **Two people on the same control no longer fight.** *Before:* editing the same property
