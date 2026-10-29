@@ -4,6 +4,13 @@ User-facing notes for GitHub releases. `tools/publish.mjs` pulls the section for
 current version and drops it into the release description. Keep it plain-language and in
 the `- **Title.** *Before:* … *After:* …` style. Technical detail lives in CHANGELOG.md.
 
+## [0.7.6] - 2026-10-29
+
+- **Two people on the same control no longer fight.** *Before:* editing the same property
+  at the same time made the value bounce between you. *After:* whoever is actively editing
+  keeps it, and the other editor is told who is changing it instead of silently losing the
+  value.
+
 ## [0.7.5] - 2026-10-29
 
 - **You can hop back into a session after being away.** *Before:* if you missed more edits

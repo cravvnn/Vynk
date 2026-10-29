@@ -28,6 +28,8 @@ const MAX_OPS_IN_WELCOME = Math.max(1, Number(process.env.MAX_OPS_IN_WELCOME ?? 
 const MSG_LIMIT_PER_SEC = 400;
 const HEARTBEAT_MS = 30000;
 const MAX_LOG_FILE_BYTES = 50 * 1024 * 1024;
+const CLAIM_TTL_MS = Math.max(100, Number(process.env.CLAIM_TTL_MS ?? 4000));
+const MAX_TRACKED_TARGETS = 20000;
 const LOG_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const BASE_DIR = process.env.BASE_DIR ?? path.join(__dirname, '..', 'data', 'bases');
@@ -61,6 +63,10 @@ interface Room {
   lastBasePut: number;
   peers: Map<string, Peer>;
   locks: Map<string, string>;
+  // Per-target edit claims (implicit: created by the accepted op). A conflicting
+  // edit from another peer is rejected with the winning op so it can converge.
+  claims: Map<string, { owner: string; expiresAt: number }>;
+  lastByTarget: Map<string, LoggedOp>;
   seq: number;
   log: LoggedOp[];
   flushTimer: NodeJS.Timeout | null;
@@ -232,6 +238,8 @@ async function getRoom(code: string): Promise<Room> {
         lastBasePut: 0,
         peers: new Map(),
         locks: new Map(),
+        claims: new Map(),
+        lastByTarget: new Map(),
         seq: log.length > 0 ? log[log.length - 1]!.seq : 0,
         log: log.slice(-MAX_LOG_IN_MEMORY),
         flushTimer: null,
@@ -346,6 +354,23 @@ async function handleHello(peer: Peer, msg: Extract<NonNullable<ReturnType<typeo
   broadcast(room, { t: 'presence', event: 'join', member: publicInfo(peer) }, peer.id);
 }
 
+// Value edits only: structure changes (add/remove/reorder/effect/mask) must not
+// be blocked by a property claim.
+function claimKey(op: EditOp): string | null {
+  const target = op.target;
+  if (!target) return null;
+  if (op.kind === 'setComp') return 'c:' + target.comp + '|' + (op.path ?? '');
+  if (!target.layer) return null;
+  if (op.kind === 'set' || op.kind === 'setExpr' || op.kind === 'setShape') {
+    return 'l:' + target.layer + '|' + (op.path ?? '');
+  }
+  if (op.kind === 'addKey' || op.kind === 'setKey' || op.kind === 'removeKey') {
+    const time = op.time !== undefined ? Math.round(op.time * 10000) : '';
+    return 'l:' + target.layer + '|' + (op.path ?? '') + '|' + time;
+  }
+  return null;
+}
+
 function handleOp(peer: Peer, op: EditOp): void {
   const room = peer.room!;
   if (!op || typeof op !== 'object' || typeof op.opId !== 'string' || typeof op.kind !== 'string') {
@@ -356,10 +381,39 @@ function handleOp(peer: Peer, op: EditOp): void {
     send(peer.socket, { t: 'error', code: 'bad_op', message: 'op missing target.comp' });
     return;
   }
+  // A fresh claim from another peer wins: do not log the op, and hand back the
+  // last accepted op for that target so the sender can converge on it.
+  const key = claimKey(op);
+  if (key) {
+    const claim = room.claims.get(key);
+    if (claim && claim.owner !== peer.id) {
+      if (claim.expiresAt > nowMs()) {
+        const last = room.lastByTarget.get(key) ?? null;
+        send(peer.socket, {
+          t: 'error',
+          code: 'locked',
+          message: 'another editor is changing this',
+          target: key,
+          owner: claim.owner,
+          op: last,
+        });
+        return;
+      }
+      room.claims.delete(key);
+    }
+  }
   room.seq++;
   const logged: LoggedOp = { seq: room.seq, author: peer.id, ts: nowMs(), op };
   room.log.push(logged);
   if (room.log.length > MAX_LOG_IN_MEMORY) room.log.splice(0, room.log.length - MAX_LOG_IN_MEMORY);
+  if (key) {
+    room.claims.set(key, { owner: peer.id, expiresAt: nowMs() + CLAIM_TTL_MS });
+    room.lastByTarget.set(key, logged);
+    if (room.lastByTarget.size > MAX_TRACKED_TARGETS) {
+      const oldest = room.lastByTarget.keys().next().value;
+      if (oldest) room.lastByTarget.delete(oldest);
+    }
+  }
   persist(room, logged);
   broadcast(room, { t: 'op', seq: logged.seq, author: logged.author, ts: logged.ts, op: logged.op });
 }
@@ -444,6 +498,9 @@ function closePeer(peer: Peer): void {
   const room = peer.room;
   if (!room) return;
   room.peers.delete(peer.id);
+  for (const [key, claim] of room.claims) {
+    if (claim.owner === peer.id) room.claims.delete(key);
+  }
   for (const [target, owner] of room.locks) {
     if (owner === peer.id) {
       room.locks.delete(target);

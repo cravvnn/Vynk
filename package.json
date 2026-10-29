@@ -1,7 +1,7 @@
 {
   "name": "vynk",
   "private": true,
-  "version": "0.7.5",
+  "version": "0.7.6",
   "workspaces": [
     "shared/protocol",
     "server"
@@ -12,7 +12,7 @@
     "start": "node server/dist/index.js",
     "smoke": "node server/scripts/smoke.mjs",
     "test": "node tools/test-diff.mjs && node tools/test-jsonpoly.mjs",
-    "test:base": "node tools/test-base-http.mjs && node tools/test-replay-limit.mjs",
+    "test:base": "node tools/test-base-http.mjs && node tools/test-replay-limit.mjs && node tools/test-claims.mjs",
     "deploy:probe": "node tools/deploy-probe.mjs",
     "soak:system": "node tools/soak-system.mjs",
     "install-panel": "powershell -ExecutionPolicy Bypass -File tools/dev-install.ps1",

@@ -128,6 +128,7 @@ var GESTURE_HOLD_MS = 700;
     outboxKey: '',
     pollMs: 0,
     applyFails: 0,
+    claimLosses: 0,
     reconnects: 0,
     localEditAt: {},
     lastRxAt: 0,
@@ -536,6 +537,21 @@ var GESTURE_HOLD_MS = 700;
         return;
       }
       case 'error': {
+        if (msg.code === 'locked' && msg.target) {
+          state.claimLosses = (state.claimLosses || 0) + 1;
+          var claimOwner = (state.members[msg.owner] && state.members[msg.owner].name) || msg.owner || 'someone';
+          var revert = msg.op && msg.op.op ? msg.op.op : null;
+          if (revert) {
+            logThrottled('claim:' + msg.target, 'edit held: ' + claimOwner + ' is changing this - your value was reverted', 4000);
+            applyRemoteOp(revert);
+          } else {
+            // Nothing to revert to (e.g. a brand-new keyframe). Adopt local state
+            // as the new baseline so the same op is not re-emitted forever.
+            if (state.compId) invalidateCompBaselines(state.compId);
+            logThrottled('claim:' + msg.target, 'edit held: ' + claimOwner + ' is changing this - your value was not shared', 4000);
+          }
+          return;
+        }
         log('server error: ' + msg.code + ' ' + msg.message);
         return;
       }
@@ -929,6 +945,7 @@ var GESTURE_HOLD_MS = 700;
       'tx ' + state.opsSent,
       'rx ' + state.opsReceived,
       'fail ' + (state.applyFails || 0),
+      'held ' + (state.claimLosses || 0),
       'q ' + state.remoteQueue.length,
       're ' + (state.reconnects || 0),
       'stop ' + state.pollScheduledDelay + 'ms',
@@ -947,6 +964,7 @@ var GESTURE_HOLD_MS = 700;
       opsSent: state.opsSent,
       opsReceived: state.opsReceived,
       applyFails: state.applyFails,
+      claimLosses: state.claimLosses,
       queued: state.remoteQueue.length,
       outbox: state.outbox.length,
       reconnects: state.reconnects,

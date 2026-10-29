@@ -110,7 +110,7 @@ export type S2C =
   | { t: 'op'; seq: number; author: string; ts: number; op: EditOp }
   | { t: 'lock'; target: string; owner: string | null }
   | { t: 'log'; id: string; name: string; line: string }
-  | { t: 'error'; code: string; message: string }
+  | { t: 'error'; code: string; message: string; target?: string; owner?: string; op?: LoggedOp | null }
   | { t: 'pong'; ts: number };
 
 export function parseC2S(raw: string): C2S | null {

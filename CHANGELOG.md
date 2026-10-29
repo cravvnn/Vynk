@@ -4,6 +4,17 @@ All notable changes to Vynk are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6] - 2026-10-29
+
+### Added
+
+- **Per-target edit claims.** The relay claims the exact value being edited (layer+path,
+  per-keyframe time, or comp setting) for 4 s, renewed by every accepted op. A conflicting
+  edit from another peer is rejected instead of logged, and the rejection carries the
+  winning op, so the sender's panel reverts to the room value and reports who is editing.
+  Structure ops (add/remove/reorder/effect/mask) are never claim-gated. `CLAIM_TTL_MS`
+  configures the lease.
+
 ## [0.7.5] - 2026-10-29
 
 ### Added

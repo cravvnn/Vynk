@@ -119,6 +119,7 @@ Limits and knobs (env vars on the `relay` service):
 | `BASE_DIR` | `<data>/bases` | Where base files + tokens are stored. |
 | `DATA_DIR` | `<data>/rooms` | Op logs. |
 | `MAX_OPS_IN_WELCOME` | `3000` | Max ops replayed to a late joiner. Beyond this the relay sets `welcome.truncated` so the panel can refuse an incomplete catch-up. |
+| `CLAIM_TTL_MS` | `4000` | How long an edit claim on a property lasts after the last accepted op. |
 
 The bundled compose file sets `DATA_DIR=/data/rooms` and `BASE_DIR=/data/bases`, both inside
 the `relay-data` volume, so rebuilding or recreating the container keeps rooms and shared bases.

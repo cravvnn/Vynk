@@ -18,7 +18,7 @@ const WS = `ws://127.0.0.1:${PORT}/ws`;
 const room = 'SOAK' + Math.floor(Math.random() * 900 + 100);
 const tmp = path.join(os.tmpdir(), 'opencode', 'soak-system');
 
-const stats = { opsSent: 0, opsRecv: 0, cursors: 0, errors: [], reconnects: 0, baseUp: 0, baseDn: 0, health: [] };
+const stats = { opsSent: 0, opsRecv: 0, cursors: 0, errors: [], reconnects: 0, baseUp: 0, baseDn: 0, health: [], claimHeld: 0 };
 
 const relay = spawn(process.execPath, ['server/dist/index.js'], {
   env: { ...process.env, PORT: String(PORT), DATA_DIR: path.join(tmp, 'rooms'), BASE_DIR: path.join(tmp, 'bases') },
@@ -59,7 +59,11 @@ function makeClient(index) {
     if (m.t === 'welcome') { id = m.selfId; token = m.token; }
     if (m.t === 'op') stats.opsRecv++;
     if (m.t === 'cursors') stats.cursors += m.batch.length;
-    if (m.t === 'error') stats.errors.push(m.code + ':' + m.message + ':' + index);
+    if (m.t === 'error') {
+      // Claims intentionally reject conflicting value edits; count them.
+      if (m.code === 'locked') { stats.claimHeld = (stats.claimHeld || 0) + 1; return; }
+      stats.errors.push(m.code + ':' + m.message + ':' + index);
+    }
   });
   ws.on('error', (e) => stats.errors.push('socket' + index + ':' + e.message));
 
@@ -135,7 +139,7 @@ setTimeout(async () => {
   const memStart = stats.health[0] ?? 0;
   const memEnd = end ? end.memory.rss : 0;
   const grew = memEnd - memStart;
-  console.log(`\n[soak-system] done: opsSent=${stats.opsSent} opsRecv=${stats.opsRecv} cursors=${stats.cursors} baseUp=${stats.baseUp} baseDn=${stats.baseDn} reconnects=${stats.reconnects}`);
+  console.log(`\n[soak-system] done: opsSent=${stats.opsSent} opsRecv=${stats.opsRecv} cursors=${stats.cursors} baseUp=${stats.baseUp} baseDn=${stats.baseDn} reconnects=${stats.reconnects} claimHeld=${stats.claimHeld}`);
   console.log(`[soak-system] rss start=${memStart}MB end=${memEnd}MB delta=${grew}MB`);
   const ok = stats.errors.length === 0 && grew < 100;
   if (!ok) console.log('[soak-system] errors:\n  ' + stats.errors.slice(0, 20).join('\n  '));
