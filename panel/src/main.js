@@ -122,6 +122,8 @@
     catchupLogged: false,
     shadows: {},
     needs: [],
+    viewerSid: null,
+    parkTryAt: 0,
     editedAt: 0,
     roundStartedAt: 0,
     parked: {},
@@ -997,6 +999,12 @@
   }
 
   function onAegpLine(line) {
+    if (line.indexOf('ARB') === 0) {
+      var nf = line.split('\t');
+      var waiter = nativeWaiting[nf[1]];
+      if (waiter) waiter(nf);
+      return;
+    }
     // The native companion tells us the project was touched (CHANGED) or the
     // active comp / selection changed (COMP/SEL). Any of those is the cue to do
     // one evalScript snapshot instead of polling constantly. We don't take the
@@ -1022,6 +1030,7 @@
       var nowFocused = line.charAt(6) === '1';
       state.focusKnown = true;
       state.aeFocused = nowFocused;
+      if (nowFocused && hasKeys(state.parked)) kickCycle(0);
       if (!nowFocused && state.myCursor.known) {
         send({ t: 'cursor', x: state.myCursor.x, y: state.myCursor.y, active: false });
       } else if (nowFocused && state.myCursor.known) {
@@ -1547,6 +1556,11 @@
       }
       log('sync watchdog: After Effects did not answer for ' + CYCLE_WATCHDOG_MS / 1000 + 's, asking again');
     }
+    if (state.viewerSid && state.parked[state.viewerSid] && aeInFront() && Date.now() - state.parkTryAt > 700) {
+      state.parkTryAt = Date.now();
+      state.inbox.unshift(state.parked[state.viewerSid]);
+      delete state.parked[state.viewerSid];
+    }
     var ops = [];
     while (state.inbox.length > 0 && (ops.length === 0 || ops.length + state.inbox[0].length <= MAX_OPS_PER_CYCLE)) {
       ops = ops.concat(state.inbox.shift());
@@ -1555,6 +1569,8 @@
     var plan = pickReads(ops);
     var req = { ops: ops, force: forced, active: plan.active, read: plan.read, rev: state.rev };
     if (plan.must || hasKeys(forced)) req.must = 1;
+    req.focused = aeInFront() ? 1 : 0;
+    state.lastReqFocused = req.focused === 1;
     state.force = {};
     if (state.stampJob) {
       req.stamp = state.stampJob;
@@ -1563,6 +1579,26 @@
     state.cycleBusy = true;
     state.cycleStartedAt = Date.now();
     var gen = state.pollGeneration;
+    // Custom data from teammates is written natively first, so the read that
+    // follows already shows it and it is adopted rather than sent back.
+    var sets = customDataSets(ops);
+    if (sets.lines.length > 0) {
+      nativeCalls(sets.lines, function (replies) {
+        for (var si = 0; si < sets.ops.length; si++) {
+          var reply = replies[si];
+          sets.ops[si]._arb = !reply ? 'custom data: no answer from the Vynk plug-in' : reply[2] === 'ok' ? '' : 'custom data: ' + reply[2];
+        }
+        if (stale() || state.pollGeneration !== gen) {
+          state.cycleBusy = false;
+          return;
+        }
+        evalCycle();
+      });
+      return;
+    }
+    evalCycle();
+
+    function evalCycle() {
     cs.evalScript(
       '(typeof vynkSync === "undefined") ? "nosync" : vynkSync.cycle(' + JSON.stringify(JSON.stringify(req)) + ')',
       function (res) {
@@ -1581,6 +1617,11 @@
           return;
         }
         if (out.error) logThrottled('cycleerr', 'sync error: ' + out.error, 5000);
+        for (var ri = 0; ri < done; ri++) {
+          if (ops[ri]._arb !== undefined) out.r[ri] = ops[ri]._arb;
+        }
+        state.viewerSid = out.viewer ? out.active : null;
+        var finish = function () {
         var took = Date.now() - state.cycleStartedAt;
         state.cycleMs = out.ms || 0;
         state.pollMs = state.pollMs ? Math.round(state.pollMs * 0.8 + took * 0.2) : took;
@@ -1643,14 +1684,196 @@
         var delay;
         if (state.inbox.length > 0 || state.stampJob || state.readQueue.length > 0 || hasKeys(state.deepQueue) || hasKeys(state.fullNext) || hasKeys(state.force)) delay = 0;
         else if (state.sweeping || state.trailOn) delay = CYCLE_ACTIVE_MS;
+        else if (state.viewerSid && state.parked[state.viewerSid] && aeInFront()) delay = CYCLE_ACTIVE_MS;
         else if (Date.now() - state.lastChangeAt < POLL_BURST_MS) delay = CYCLE_ACTIVE_MS;
         else delay = state.nativeMode ? NATIVE_IDLE_POLL_MS : CYCLE_IDLE_MS;
         // Never spend more than about a third of AE's time reading.
         if (delay > 0) delay = Math.max(delay, state.cycleMs * 2);
         state.pollScheduledDelay = delay;
         kickCycle(delay);
+        };
+        if (customDataNeeded(out, ops.slice(0, done))) {
+          state.cycleBusy = true;
+          customDataPass(out, ops.slice(0, done), function () {
+            state.cycleBusy = false;
+            if (stale() || state.pollGeneration !== gen) return;
+            finish();
+          });
+          return;
+        }
+        finish();
       }
     );
+    }
+  }
+
+  // ------------------------------------------------- custom-data effect params
+  // Curves and other "arbitrary data" parameters cannot be read or written by
+  // scripts. The native companion does both, addressed by comp item id, layer
+  // id, effect position and parameter position; the bytes travel as hex in an
+  // ordinary prop op ({ v: { arb: hex } }).
+  var NATIVE_TIMEOUT_MS = 3000;
+  var nativeSeq = 0;
+  var nativeWaiting = {};
+
+  function nativeCalls(lines, cb) {
+    var replies = [];
+    var left = lines.length;
+    var ids = [];
+    var finished = false;
+    var timer = null;
+    function end() {
+      if (finished) return;
+      finished = true;
+      if (timer) clearTimeout(timer);
+      for (var k = 0; k < ids.length; k++) delete nativeWaiting[ids[k]];
+      cb(replies);
+    }
+    var sock = state.aegp.sock;
+    if (left === 0 || !sock || !state.aegp.connected) {
+      cb(replies);
+      return;
+    }
+    timer = later(end, NATIVE_TIMEOUT_MS);
+    for (var i = 0; i < lines.length; i++) {
+      (function (index) {
+        var id = String(++nativeSeq);
+        ids.push(id);
+        nativeWaiting[id] = function (fields) {
+          replies[index] = fields;
+          if (--left === 0) end();
+        };
+        try { sock.write(lines[index][0] + '\t' + id + '\t' + lines[index].slice(1).join('\t') + '\n'); } catch (e) {}
+      })(i);
+    }
+  }
+
+  function arbHex(value) {
+    return value && value.v && typeof value.v.arb === 'string' ? value.v.arb : '';
+  }
+
+  function findLayerIn(comp, sid) {
+    if (!comp) return null;
+    for (var i = 0; i < comp.layers.length; i++) {
+      if (comp.layers[i].sid === sid) return comp.layers[i];
+    }
+    return null;
+  }
+
+  // Custom data a teammate changed on an existing effect: resolved against
+  // this machine's own positions and written before the next read.
+  function customDataSets(ops) {
+    var out = { lines: [], ops: [] };
+    for (var i = 0; i < ops.length; i++) {
+      var op = ops[i];
+      if (op.kind !== 'prop' || !arbHex(op.value)) continue;
+      if (!state.aegp.connected) {
+        op._arb = 'custom data (Curves...) needs the Vynk plug-in installed';
+        continue;
+      }
+      var comp = state.shadows[Sync.sidPart(op.target.comp)];
+      var layer = findLayerIn(comp, op.target.layer);
+      var rec = layer ? layer.p[op.path] : null;
+      if (!comp || comp.iid === undefined || !layer || layer.lid === undefined || !rec || !rec.cx) {
+        op._arb = 'custom data: effect not read here yet';
+        continue;
+      }
+      out.lines.push(['ARBSET', comp.iid, layer.lid, rec.fx, rec.pi, arbHex(op.value)]);
+      out.ops.push(op);
+    }
+    return out;
+  }
+
+  function hasCustom(layer) {
+    if (!layer || layer.lite || !layer.p) return false;
+    for (var path in layer.p) {
+      if (layer.p[path].cx) return true;
+    }
+    return false;
+  }
+
+  function customDataNeeded(out, applied) {
+    if (!out || !out.snaps || !state.aegp.connected) return false;
+    for (var i = 0; i < out.snaps.length; i++) {
+      for (var j = 0; j < out.snaps[i].layers.length; j++) {
+        if (hasCustom(out.snaps[i].layers[j])) return true;
+      }
+    }
+    return false;
+  }
+
+  // Custom data inside an effect or layer a teammate just created.
+  function createdCustomData(applied, snaps) {
+    var lines = [];
+    for (var i = 0; i < applied.length; i++) {
+      var op = applied[i];
+      var recs = null;
+      var prefix = '';
+      if (op.kind === 'gadd' && op.value && op.value.p) {
+        recs = op.value.p;
+        prefix = op.path + '/' + op.value.key;
+      } else if (op.kind === 'add' && op.value && op.value.layer) {
+        recs = op.value.layer.p;
+      }
+      if (!recs) continue;
+      var snap = null;
+      for (var s = 0; s < snaps.length; s++) {
+        if (Sync.sidPart(snaps[s].id) === Sync.sidPart(op.target.comp)) snap = snaps[s];
+      }
+      var layer = findLayerIn(snap, op.target.layer);
+      if (!snap || snap.iid === undefined || !layer || layer.lid === undefined || layer.lite) continue;
+      for (var rel in recs) {
+        var hex = arbHex(recs[rel]);
+        if (!hex) continue;
+        var rec = layer.p[prefix ? prefix + '/' + rel : rel];
+        if (rec && rec.cx) lines.push(['ARBSET', snap.iid, layer.lid, rec.fx, rec.pi, hex]);
+      }
+    }
+    return lines;
+  }
+
+  function customDataPass(out, applied, cb) {
+    var snaps = out.snaps;
+    nativeCalls(createdCustomData(applied, snaps), function () {
+      var lines = [];
+      var targets = [];
+      for (var i = 0; i < snaps.length; i++) {
+        for (var j = 0; j < snaps[i].layers.length; j++) {
+          var layer = snaps[i].layers[j];
+          if (!hasCustom(layer) || layer.lid === undefined || snaps[i].iid === undefined) continue;
+          lines.push(['ARBGET', snaps[i].iid, layer.lid]);
+          targets.push([snaps[i], layer]);
+        }
+      }
+      nativeCalls(lines, function (replies) {
+        for (var t = 0; t < targets.length; t++) {
+          var snap = targets[t][0];
+          var layer = targets[t][1];
+          var values = {};
+          var reply = replies[t];
+          if (reply && reply[2] === 'ok' && reply[3]) {
+            var items = reply[3].split(';');
+            for (var k = 0; k < items.length; k++) {
+              var parts = items[k].split(':');
+              if (parts.length >= 4) values[parts[0] + ':' + parts[1]] = parts[3];
+            }
+          }
+          var held = findLayerIn(state.shadows[Sync.sidPart(snap.id)], layer.sid);
+          for (var path in layer.p) {
+            var rec = layer.p[path];
+            if (!rec.cx) continue;
+            var hex = values[rec.fx + ':' + rec.pi];
+            if (hex) {
+              rec.v = { arb: hex };
+            } else if (held && held.p[path] && held.p[path].v) {
+              // Unknown this time (keyframed, no answer): keep what we had.
+              rec.v = held.p[path].v;
+            }
+          }
+        }
+        cb();
+      });
+    });
   }
 
   // Opening or creating another project is not an edit. The revision counter
@@ -1694,6 +1917,12 @@
     }
   }
 
+  // Reported by the native companion; without it, assume yes and let After
+  // Effects decide.
+  function aeInFront() {
+    return !state.focusKnown || state.aeFocused;
+  }
+
   function hasKeys(obj) {
     for (var k in obj) return true;
     return false;
@@ -1709,9 +1938,25 @@
   function handleCycle(out, applied, forced) {
     var i;
     var sid;
+    var parkedLayers = {};
     for (i = 0; i < applied.length; i++) {
-      if (!out.r[i]) continue;
-      if (out.r[i] === 'needs the comp open') {
+      var styleOp = applied[i].kind === 'prop' && String(applied[i].path || '').lastIndexOf('ADBE Layer Styles', 0) === 0;
+      var layerKey = Sync.sidPart(applied[i].target.comp) + '|' + applied[i].target.layer;
+      // Style values that came with a style that could not be added yet wait
+      // with it, whatever their own result was.
+      var withParked = styleOp && parkedLayers[layerKey];
+      if (!out.r[i] && !withParked) continue;
+      if (out.r[i] === 'needs the comp open' || withParked) {
+        // Only a real attempt counts: the comp was in the viewer and After
+        // Effects was in front, yet the style did not appear.
+        if (state.lastReqFocused && out.viewer && out.active === Sync.sidPart(applied[i].target.comp)) {
+          applied[i]._tries = (applied[i]._tries || 0) + 1;
+        }
+        if (applied[i]._tries > 10) {
+          logThrottled('stylefail:' + layerKey, 'a teammate\'s layer style could not be applied here (After Effects ignored the Layer Styles command)', 30000);
+          continue;
+        }
+        if (styleOp) parkedLayers[layerKey] = 1;
         // Layer styles can only be added in the comp that is in the viewer.
         var parkSid = Sync.sidPart(applied[i].target.comp);
         var parked = state.parked[parkSid] || (state.parked[parkSid] = []);
@@ -1720,16 +1965,12 @@
           if (Sync.targetKey(parked[pj]) === pk) parked.splice(pj, 1);
         }
         parked.push(applied[i]);
-        logThrottled('parked:' + parkSid, 'a teammate changed layer styles in a comp you do not have open - they apply when you open it', 30000);
+        logThrottled('parked:' + parkSid, 'a teammate changed layer styles in a comp you do not have open - they apply when that comp is open and After Effects is in front', 30000);
         continue;
       }
       state.applyFails = (state.applyFails || 0) + 1;
       logThrottled('applyfail:' + applied[i].kind + ':' + String(out.r[i]).slice(0, 40), 'apply failed: ' + applied[i].kind + ' ' + (applied[i].path || '') + ' - ' + out.r[i], 3000);
       if (repairable(out.r[i])) requestRepair(applied[i], String(out.r[i]));
-    }
-    if (out.viewer && out.active && state.parked[out.active]) {
-      state.inbox.unshift(state.parked[out.active]);
-      delete state.parked[out.active];
     }
     var snaps = out.snaps || [];
     var active = null;
@@ -1848,6 +2089,7 @@
         lite.kind = held.kind;
         if (held.src) lite.src = held.src;
         if (held.box) lite.box = held.box;
+        if (held.lid !== undefined) lite.lid = held.lid;
         delete lite.lite;
       }
       if (!unknown) delete state.deepQueue[compSid];

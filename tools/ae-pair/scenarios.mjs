@@ -1,6 +1,42 @@
 // Edit scenarios for the two-instance harness. `jsx` is an ES3 function body
 // run inside After Effects with `comp` (the Main comp), `L(name)` (layer by
 // name) and `vynkPair` in scope. `who` is the instance that makes the edit.
+const PRESETS = 'C:/Program Files/Adobe/Adobe After Effects 2025/Support Files/Presets/';
+
+const ids = async (h, who, layer) => JSON.parse(await h.jsx(who, "(function(){var c=vynkPair.comp('Main');var l=vynkPair.layer(c,'" + layer + "');return JSON.stringify([c.id,l?l.id:-1]);})()"));
+
+// Raw custom data of every effect on a layer, as the native companion sees it.
+async function curvesOf(h, who, layer) {
+  const [cid, lid] = await ids(h, who, layer);
+  return h.native(who, 'ARBGET', [cid, lid]);
+}
+
+async function sameCurves(h, layer) {
+  const a = await curvesOf(h, 'A', layer);
+  const b = await curvesOf(h, 'B', layer);
+  if (a.indexOf('ok') !== 0) return 'A: ' + a.slice(0, 60);
+  if (a !== b) return 'custom data differs (A ' + a.length + ' chars, B ' + b.length + ')';
+  if (a.split('	')[1] === undefined || a.split('	')[1] === '') return 'no custom data on ' + layer;
+  return '';
+}
+
+// "Edit" a curve without a mouse: take the curve from another shipped preset
+// (applied to a scratch layer) and write it into the target's Curves.
+async function copyCurve(h, who, preset, layer) {
+  const made = await h.jsx(who, "(function(){var c=vynkPair.comp('Main');var s=c.layers.addSolid([0.5,0.5,0.5],'CurveSrc',100,100,1,10);s.applyPreset(new File('" + PRESETS + "Image - Creative/" + preset + "'));return 'ok';})()");
+  if (made !== 'ok') return 'ERR ' + made;
+  const src = await curvesOf(h, who, 'CurveSrc');
+  const dst = await curvesOf(h, who, layer);
+  const first = (r) => (r.split('	')[1] || '').split(';')[0].split(':');
+  const s = first(src);
+  const d = first(dst);
+  await h.jsx(who, "(function(){vynkPair.layer(vynkPair.comp('Main'),'CurveSrc').remove();return 'ok';})()");
+  if (s.length < 4 || d.length < 4) return 'ERR no curves (' + src.slice(0, 40) + ' / ' + dst.slice(0, 40) + ')';
+  const [cid, lid] = await ids(h, who, layer);
+  const set = await h.native(who, 'ARBSET', [cid, lid, d[0], d[1], s[3]]);
+  return set === 'ok' ? 'ok' : 'ERR ' + set;
+}
+
 export const scenarios = [
   { name: 'set position', who: 'A', jsx: `L('Red').property('ADBE Transform Group').property('ADBE Position').setValue([400, 300]);` },
   // activeItem is empty or a non-comp whenever focus is outside a comp viewer.
@@ -50,12 +86,12 @@ export const scenarios = [
   { name: 'layer marker', who: 'A', jsx: `L('Yellow').property('ADBE Marker').setValueAtTime(1, new MarkerValue('beat'));` },
   { name: 'comp marker', who: 'A', jsx: `comp.markerProperty.setValueAtTime(2, new MarkerValue('drop'));` },
   { name: 'time remap on precomp', who: 'A', jsx: `L('Nested').timeRemapEnabled = true;` },
-  { name: 'layer style: add drop shadow', who: 'A', timeout: 20000, jsx: `L('Red').selected = true; app.executeCommand(9000);` },
-  { name: 'layer style: change its values', who: 'A', timeout: 20000, jsx: `var d = L('Red').property('ADBE Layer Styles').property('dropShadow/enabled'); d.property(2).setValue([1, 0, 0, 1]); d.property(5).setValue(40);` },
-  { name: 'layer style: add stroke too', who: 'A', timeout: 20000, jsx: `L('Red').selected = true; app.executeCommand(9008); L('Red').property('ADBE Layer Styles').property('frameFX/enabled').property('frameFX/size').setValue(12);` },
-  { name: 'layer style: hide one', who: 'A', timeout: 20000, jsx: `L('Red').property('ADBE Layer Styles').property('dropShadow/enabled').enabled = false;` },
-  { name: 'layer style: peer edits it', who: 'B', timeout: 20000, jsx: `L('Red').property('ADBE Layer Styles').property('frameFX/enabled').property('frameFX/size').setValue(3);` },
-  { name: 'layer style: remove all', who: 'A', timeout: 20000, jsx: `L('Red').selected = true; app.executeCommand(2072);` },
+  { name: 'layer style: add drop shadow', who: 'A', focus: 'B', timeout: 20000, jsx: `L('Red').selected = true; focusViewer(comp); app.executeCommand(9000);` },
+  { name: 'layer style: change its values', who: 'A', focus: 'B', timeout: 20000, jsx: `var d = L('Red').property('ADBE Layer Styles').property('dropShadow/enabled'); d.property(2).setValue([1, 0, 0, 1]); d.property(5).setValue(40);` },
+  { name: 'layer style: add stroke too', who: 'A', focus: 'B', timeout: 20000, jsx: `L('Red').selected = true; focusViewer(comp); app.executeCommand(9008); L('Red').property('ADBE Layer Styles').property('frameFX/enabled').property('frameFX/size').setValue(12);` },
+  { name: 'layer style: hide one', who: 'A', focus: 'B', timeout: 20000, jsx: `L('Red').property('ADBE Layer Styles').property('dropShadow/enabled').enabled = false;` },
+  { name: 'layer style: peer edits it', who: 'B', focus: 'A', timeout: 20000, jsx: `L('Red').property('ADBE Layer Styles').property('frameFX/enabled').property('frameFX/size').setValue(3);` },
+  { name: 'layer style: remove all', who: 'A', focus: 'B', timeout: 20000, jsx: `L('Red').selected = true; focusViewer(comp); app.executeCommand(2072);` },
   { name: 'add camera', who: 'A', jsx: `var c = comp.layers.addCamera('Cam', [960, 540]);` },
   { name: 'add light', who: 'A', jsx: `comp.layers.addLight('Sun', [960, 540]);` },
   { name: 'burst: 40 edits at once', who: 'A', jsx: `for (var i = 1; i <= comp.numLayers; i++) { var l = comp.layer(i); if (l.locked) continue; var t = l.property('ADBE Transform Group'); try { t.property('ADBE Opacity').setValue(10 + i); t.property('ADBE Rotate Z').setValue(i * 3); t.property('ADBE Anchor Point').setValue(t.property('ADBE Anchor Point').value.length > 2 ? [i, i, 0] : [i, i]); } catch (e) {} }`, timeout: 20000 },
@@ -104,9 +140,10 @@ export const scenarios = [
   {
     name: 'layer style in a comp the peer does not have open', who: 'A', timeout: 90000,
     run: async (h) => {
-      const out = await h.jsx('A', "(function(){try{var o=vynkPair.comp('Other');o.openInViewer();var l=vynkPair.layer(o,'Inner');for(var i=1;i<=o.numLayers;i++)o.layer(i).selected=(o.layer(i)===l);app.executeCommand(9006);return 'ok';}catch(e){return 'ERR '+e;}})()");
+      const out = await h.jsx('A', "(function(){try{var o=vynkPair.comp('Other');o.openInViewer();try{app.activeViewer.setActive();}catch(ev){}var l=vynkPair.layer(o,'Inner');for(var i=1;i<=o.numLayers;i++)o.layer(i).selected=(o.layer(i)===l);app.executeCommand(9006);return 'ok';}catch(e){return 'ERR '+e;}})()");
       await h.sleep(6000);
       await h.jsx('B', "(function(){vynkPair.comp('Other').openInViewer();return 'ok';})()");
+      h.focus('B');
       return out;
     }
   },
@@ -144,6 +181,22 @@ export const scenarios = [
       }
       return errors ? 'ERR ' + errors + ' of ' + n + ' edits failed' : 'ok';
     }
+  },
+  // ---- Custom effect data (Curves): unreadable to scripts, synced natively.
+  {
+    name: 'curves: preset with a curve applied', who: 'A', timeout: 30000,
+    jsx: `L('Blue').applyPreset(new File('${PRESETS}Image - Creative/Contrast - luminance.ffx'));`,
+    check: (h) => sameCurves(h, 'Blue')
+  },
+  {
+    name: 'curves: change the curve', who: 'A', timeout: 30000,
+    run: (h) => copyCurve(h, 'A', 'Grayscale 4.ffx', 'Blue'),
+    check: (h) => sameCurves(h, 'Blue')
+  },
+  {
+    name: 'curves: peer changes it back', who: 'B', timeout: 30000,
+    run: (h) => copyCurve(h, 'B', 'Contrast - luminance.ffx', 'Blue'),
+    check: (h) => sameCurves(h, 'Blue')
   },
   { name: 'stress: 100 layers with keys and effects', who: 'A', timeout: 120000, jsx: `for (var i = 0; i < 100; i++) { var s = comp.layers.addSolid([0.2, 0.4, 0.6], 'S' + i, 1920, 1080, 1, 10); var p = s.property('ADBE Transform Group').property('ADBE Position'); for (var k = 0; k < 20; k++) p.setValueAtTime(k * 0.4, [k * 50, i * 10]); s.property('ADBE Effect Parade').addProperty('ADBE Gaussian Blur 2').property('ADBE Gaussian Blur 2-0001').setValue(i); }` },
   { name: 'edit inside the 100-layer comp', who: 'A', jsx: `L('S50').property('ADBE Transform Group').property('ADBE Opacity').setValue(12);` },

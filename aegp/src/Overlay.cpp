@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include "Bridge.h"
+#include "AeHost.h"
 
 #include <atomic>
 #include <cstdio>
@@ -137,6 +138,11 @@ void handleLine(const std::string& line) {
   }
   if (line.compare(0, 4, "PING") == 0) {
     if (g_bridge) g_bridge->sendLine("PONG");
+    return;
+  }
+  // Project reads/writes must run on AE's main thread: hand them over.
+  if (line.compare(0, 3, "ARB") == 0) {
+    AeHost_enqueue(line);
     return;
   }
 }

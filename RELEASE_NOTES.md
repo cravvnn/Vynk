@@ -34,7 +34,13 @@ Everyone in a room must update: 0.8 and 0.7 panels cannot share a session.
   *After:* it syncs as its own layer.
 - **Big comps stay responsive.** The panel reads in depth only what you are working on.
 
-Not yet synced: layer styles, and effect controls that hold custom data such as Curves.
+- **Layer styles and Curves sync.** Drop shadows, strokes, glows and the rest, plus Curves
+  and other effects that keep their own data. (A layer style added in a comp your teammate
+  does not have open appears when they open it.)
+- **Every comp stays in step, not just the open one.** Comps nobody is looking at are
+  compared in the background and repaired if they drift.
+
+Not yet synced: the Pattern Overlay layer style, and Curves that are keyframed.
 
 ## [0.7.7] - 2026-10-29
 

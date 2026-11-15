@@ -12,3 +12,8 @@ typedef void (*AeHostSink)(const char* line);
 void AeHost_init(void* basicSuite, unsigned int pluginId, AeHostSink sink);
 void AeHost_onIdle(long long nowMs);
 void AeHost_shutdown();
+
+// Thread-safe: queue a panel command (ARBGET/ARBSET) for the main thread and
+// wake the idle hook.
+#include <string>
+void AeHost_enqueue(const std::string& line);

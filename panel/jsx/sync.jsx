@@ -38,6 +38,7 @@ $.global.vynkSync = (function () {
   };
   var CMD_REMOVE_STYLES = 2072;
   var NEEDS_VIEWER = 'needs the comp open';
+  var focusedNow = true;
 
   var BUILT_IN = {
     'ADBE Transform Group': 1, 'ADBE Material Options Group': 1, 'ADBE Audio Group': 1, 'ADBE Plane Options Group': 1,
@@ -297,7 +298,14 @@ $.global.vynkSync = (function () {
 
   function readLeaf(p) {
     var pvt = p.propertyValueType;
-    if (pvt === PVT_NONE || pvt === PVT_CUSTOM) return null;
+    if (pvt === PVT_NONE) return null;
+    if (pvt === PVT_CUSTOM) {
+      // Custom data (Curves...) is unreadable here; the panel fetches it
+      // through the native companion by effect and parameter position.
+      var eff = p.parentProperty;
+      if (!eff || !eff.parentProperty || eff.parentProperty.matchName !== 'ADBE Effect Parade') return null;
+      return { cx: 1, m: 0, fx: eff.propertyIndex, pi: p.propertyIndex };
+    }
     var rec = {};
     try {
       if (p.isSeparationLeader && p.dimensionsSeparated) return { sep: 1, m: 1 };
@@ -503,6 +511,8 @@ $.global.vynkSync = (function () {
       if (!hasItem(have, want[i])) missing.push(want[i]);
     }
     if (!extra && missing.length === 0) return '';
+    // The Layer Styles menu only acts while After Effects is the foreground app.
+    if (!focusedNow) return NEEDS_VIEWER;
     for (i = 0; i < missing.length; i++) {
       if (!STYLE_CMD[missing[i]]) return 'style not scriptable: ' + missing[i];
     }
@@ -523,7 +533,9 @@ $.global.vynkSync = (function () {
     for (i = 0; i < missing.length; i++) app.executeCommand(STYLE_CMD[missing[i]]);
     var now = appliedStyles(layer.property(STYLES));
     for (i = 0; i < want.length; i++) {
-      if (!hasItem(now, want[i])) return 'style not applied: ' + want[i];
+      // The Layer Styles menu sometimes ignores a script right after the viewer
+      // changed; the panel keeps it parked and tries again on the next read.
+      if (!hasItem(now, want[i])) return NEEDS_VIEWER;
     }
     return '';
   }
@@ -632,6 +644,7 @@ $.global.vynkSync = (function () {
   function readLayer(layer, sid, force) {
     var info = layerKind(layer);
     var entry = { sid: sid, kind: info.kind, a: layerAttrs(layer), p: {}, g: {} };
+    try { if (typeof layer.id === 'number') entry.lid = layer.id; } catch (eId) {}
     if (info.src) entry.src = info.src;
     if (info.box) entry.box = 1;
     walk(layer, '', 0, force, entry.p, entry.g);
@@ -714,7 +727,9 @@ $.global.vynkSync = (function () {
       }
       if (isSel) sel.push(sid);
     }
-    return { id: compKey(comp), s: s, layers: layers, sel: sel, full: all ? 1 : 0 };
+    var iid;
+    try { iid = comp.id; } catch (eIid) {}
+    return { id: compKey(comp), iid: iid, s: s, layers: layers, sel: sel, full: all ? 1 : 0 };
   }
 
   // ------------------------------------------------------------------- apply
@@ -834,7 +849,7 @@ $.global.vynkSync = (function () {
         if (p.dimensionsSeparated) p.dimensionsSeparated = false;
       }
     } catch (e0) {}
-    if (rec.big) return;
+    if (rec.big || rec.cx) return;
     try {
       if (p.canSetExpression) {
         var want = rec.x || '';
@@ -1262,7 +1277,8 @@ $.global.vynkSync = (function () {
       out.rev = revBefore;
       try {
         var quiet = app.project.activeItem;
-        if (!(quiet instanceof CompItem) && req.active && req.active.c) quiet = findComp(req.active.c);
+        if (quiet instanceof CompItem) out.viewer = 1;
+        else if (req.active && req.active.c) quiet = findComp(req.active.c);
         if (quiet instanceof CompItem) {
           out.active = sidOf(quiet);
           out.aid = compKey(quiet);
@@ -1291,6 +1307,7 @@ $.global.vynkSync = (function () {
           if (stampLayer) writeStamp(stampLayer, sl[i][2]);
         }
       }
+      focusedNow = req.focused !== 0;
       out.r = applyAll(req.ops);
       itemCache = null;
       out.items = readItems();

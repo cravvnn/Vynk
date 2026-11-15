@@ -20,7 +20,10 @@ optional base `.aep`; footage is resolved from your own storage.
   composition settings and markers.
 - **Cursors, selection and presence.**
 
-Not synced yet: layer styles, and effect controls that hold custom data (such as Curves).
+- **Layer styles** and **Curves** (and other effects that keep their own data; needs the
+  native plug-in).
+
+Not synced yet: the Pattern Overlay layer style, and keyframed Curves.
 Solo, shy, lock and your selection stay local.
 
 Playheads are deliberately **not** synced - editors work at different points of the

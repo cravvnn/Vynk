@@ -19,6 +19,17 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
   guide/adjustment flags, collapse transformations, comments, cameras and lights as layers.
 - **Whole-project sync.** Edits in comps that are not open, new comps, folders, renames,
   moving items between folders and precompose all sync. Previously only the active comp did.
+- **Layer styles sync.** Which styles a layer has, whether each is shown, and all their
+  values. Scripts can only add a style through the Layer > Layer Styles menu, on the comp in
+  the viewer, so a style change for a comp the receiver does not have open waits until they
+  open it.
+- **Curves and other custom-data effect parameters sync** through the native companion,
+  which reads and writes their raw data (`ARBGET`/`ARBSET` on the bridge, main thread,
+  one undo step). A different data size is refused rather than written. Needs the plug-in on
+  both machines.
+- **Repair covers the whole project.** Each panel publishes a fingerprint per comp; a comp
+  that still differs from the longest-present teammate is re-read in full (so unnoticed local
+  edits go out first) and then repaired, even if nobody has it open.
 - **Self-repair.** Each panel publishes a fingerprint of the comp it has open. When two
   fingerprints still differ after both sides have caught up, the peer with the higher id
   asks the lowest-id peer for the layers that differ and gets whole layers back. An edit
@@ -72,6 +83,10 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
   install first. Previously both panels attached to whichever companion started last, so one
   of them had no cursor overlay or change signal. The shared `bridge.port` is still written
   and is only deleted by the instance it names.
+- **Edits made while focus is outside a comp viewer** (Project panel, Effect Controls, the
+  Vynk panel) were only found by a slow background pass; the last comp now stays current.
+- **Edits to comps that are not open could be missed** when they coincided with other
+  changes. Any edit now keeps the background pass going until a quiet full round.
 - **Stale panel copies.** A panel reload re-ran the script in the same window while the
   previous copy's timers kept firing, so several sync loops drove one project. Every timer
   now checks it belongs to the newest copy.
@@ -81,8 +96,9 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
 
 ### Known gaps
 
-- Layer styles: After Effects gives scripts no way to add one.
-- Effect parameters with custom data (for example Curves) cannot be read by scripts.
+- Pattern Overlay (the one layer style with no menu command) and single-style removal other
+  than through Remove All + re-add.
+- Keyframed custom-data parameters (a keyframed Curves) are not synced; static ones are.
 - Footage import is not announced on its own; footage layers resolve media by path or name.
 
 ## [0.7.7] - 2026-10-29

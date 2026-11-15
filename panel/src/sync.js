@@ -537,6 +537,8 @@
     for (i = 0; i < paths.length; i++) {
       path = paths[i];
       var rec = layer.p[path];
+      // Custom data is only known where the native companion runs.
+      if (rec.cx) continue;
       if (!rec.m) {
         var slash = path.indexOf('/');
         var top = slash < 0 ? path : path.substring(0, slash);

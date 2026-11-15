@@ -85,9 +85,29 @@ const js = (who, code, timeout) => cmd(who, { js: code }, timeout);
 
 // Like a person, a scenario selects the layer it edits (select: false opts out,
 // which is how a script or plug-in would touch a layer).
+function focusWindow(who) {
+  try {
+    return execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(here, 'focus.ps1')}" -ProcessName "${PROC[who]}"`, { encoding: 'utf8' }).trim();
+  } catch {
+    return 'error';
+  }
+}
+
+// One native companion call made through a panel (ARBGET/ARBSET).
+async function native(who, verb, args) {
+  await js(who, "(function(){window.__nat=null;nativeCalls([[" + JSON.stringify(verb) + "," + args.map((a) => JSON.stringify(String(a))).join(',') + "]],function(r){window.__nat=r[0]?r[0].slice(2).join('\t'):'no answer';});return 'ok';})()");
+  for (let i = 0; i < 40; i++) {
+    await sleep(100);
+    const v = await js(who, 'String(window.__nat)');
+    if (v !== 'null') return v;
+  }
+  return 'timeout';
+}
+
 function wrap(body, select) {
   return (
     "(function(){try{var comp=vynkPair.comp('Main');" +
+    "var focusViewer=function(c){c.openInViewer();try{app.activeViewer.setActive();}catch(ef){}};" +
     "var L=function(n){var l=vynkPair.layer(comp,n);if(!l)throw new Error('no layer '+n);" +
     (select === false ? '' : "for(var q=1;q<=comp.numLayers;q++){try{comp.layer(q).selected=(comp.layer(q)===l);}catch(eq){}}") +
     "return l;};" +
@@ -357,13 +377,16 @@ async function main() {
       }
       let outs;
       if (sc.run) {
-        outs = [await sc.run({ js, jsx, wrap, sleep, waitFor, obs })];
+        outs = [await sc.run({ js, jsx, wrap, sleep, waitFor, obs, native, focus: focusWindow })];
       } else {
         const runs = [jsx(sc.who, wrap(sc.jsx, sc.select))];
         if (sc.also) runs.push(jsx(sc.also.who, wrap(sc.also.jsx, sc.select)));
         outs = await Promise.all(runs);
       }
       if (outs.some((o) => o !== 'ok')) note = 'edit: ' + outs.join(' / ');
+      // The receiving teammate is working in After Effects (some commands only
+      // run while it is the foreground app).
+      if (sc.focus) focusWindow(sc.focus);
       if (sc.then) {
         await sleep(1500);
         await jsx(sc.then.who, sc.then.raw);
@@ -388,10 +411,24 @@ async function main() {
           convergedAt = 0;
         }
       }
+      // Things the project dump cannot see (custom effect data) are compared by
+      // the scenario itself, polling until they match or time runs out.
+      let checkFail = '';
+      if (sc.check && fresh.size === 0) {
+        const until = Date.now() + (sc.checkMs || 30000);
+        for (;;) {
+          checkFail = await sc.check({ js, jsx, sleep, native });
+          if (!checkFail || Date.now() > until) break;
+          await sleep(700);
+        }
+        if (checkFail) note += (note ? '; ' : '') + 'check: ' + checkFail;
+        else if (!convergedAt) convergedAt = Date.now() - t0;
+        else convergedAt = Math.max(convergedAt, Date.now() - t0);
+      }
       const opsDuring = obs.ops.length - opsBefore;
       await sleep(1200);
       const chatter = obs.ops.length - opsBefore - opsDuring;
-      const pass = fresh.size === 0 && !note.startsWith('edit: ERR');
+      const pass = fresh.size === 0 && !checkFail && !note.startsWith('edit: ERR');
       if (!changed && !sc.then) note += (note ? '; ' : '') + 'edit changed nothing locally';
       if (chatter > 0) note += (note ? '; ' : '') + `${chatter} op(s) still flowing after settle`;
       const row = { name: sc.name, who: sc.who, pass, known: !!sc.known, ms: convergedAt, ops: opsDuring, note, diffs: [...fresh].slice(0, 12).map(([k, v]) => ({ key: k, A: v[0], B: v[1] })), diffCount: fresh.size };
