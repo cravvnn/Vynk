@@ -121,6 +121,15 @@
     historyFetchTried: false,
     catchupLogged: false,
     shadows: {},
+    needs: [],
+    awaiting: {},
+    repairAsked: {},
+    repairSent: {},
+    myHash: '',
+    hashComp: null,
+    lastNeedPair: '',
+    lastNeedAt: 0,
+    lastSyncAt: 0,
     inbox: [],
     pending: {},
     force: {},
@@ -380,6 +389,7 @@
       state.members = {};
       state.order = [];
       state.pending = {};
+      state.awaiting = {};
       state.roomToken = '';
       state.baseInfo = null;
       state.baseOpened = false;
@@ -511,6 +521,7 @@
         if (sel) {
           sel.selection = msg.layers;
           if (msg.compId) sel.compId = msg.compId;
+          sel.compHash = msg.hash || '';
         }
         renderMembers();
         return;
@@ -1214,6 +1225,7 @@
   }, 30000);
 
   every(renderHealth, 1000);
+  every(repairTick, REPAIR_TICK_MS);
 
   $('connectBtn').addEventListener('click', function () {
     if (state.connected) {
@@ -1289,12 +1301,13 @@
 
   // Remote ops are queued as groups: one teammate gesture is applied in one
   // After Effects call, so its side effects never surface half-way.
-  function acceptRemote(op) {
+  function acceptRemote(op, author) {
     var list = innerOps(op);
     var group = [];
     for (var i = 0; i < list.length; i++) {
       var inner = list[i];
       if (!inner || !inner.target || !Sync.isKind(inner.kind)) continue;
+      if (author) inner._from = author;
       var key = Sync.targetKey(inner);
       // Our own unacknowledged edit to the same value is later in relay
       // order, so it wins everywhere; applying this one here would diverge.
@@ -1312,6 +1325,7 @@
     var op = msg.op;
     if (!op || !Sync) return;
     if (msg.author === state.selfId) {
+      delete state.awaiting[op.opId];
       var own = innerOps(op);
       for (var i = 0; i < own.length; i++) {
         var key = Sync.targetKey(own[i]);
@@ -1329,15 +1343,24 @@
         state.seenOpCount = 0;
       }
     }
+    if (op.kind === 'need') {
+      if (inAE && op.value && op.value.to === state.selfId && op.target) {
+        state.needs.push({ op: op, author: msg.author, at: Date.now() });
+        later(repairTick, 0);
+      }
+      return;
+    }
     state.opsReceived += innerOps(op).length;
     if (!inAE) return;
-    if (acceptRemote(op) > 0) {
+    state.lastSyncAt = Date.now();
+    if (acceptRemote(op, msg.author) > 0) {
       maybeLogRx(op.kind, op.kind === 'batch' ? innerOps(op).length + ' edit(s)' : op.path);
       kickCycle(0);
     }
   }
 
   function sendOps(ops) {
+    state.lastSyncAt = Date.now();
     var live = state.ws && state.ws.readyState === 1;
     var keys = {};
     var any = false;
@@ -1367,11 +1390,9 @@
     var size = 0;
     function flush() {
       if (chunk.length === 0) return;
-      if (chunk.length === 1) {
-        send({ t: 'op', op: chunk[0] });
-      } else {
-        send({ t: 'op', op: { opId: chunk[0].opId + 'b', kind: 'batch', target: { comp: chunk[0].target.comp }, value: { ops: chunk } } });
-      }
+      var wire = chunk.length === 1 ? chunk[0] : { opId: chunk[0].opId + 'b', kind: 'batch', target: { comp: chunk[0].target.comp }, value: { ops: chunk } };
+      if (live) state.awaiting[wire.opId] = 1;
+      send({ t: 'op', op: wire });
       chunk = [];
       size = 0;
     }
@@ -1589,7 +1610,10 @@
   }
 
   function announceSelection() {
-    if (state.connected) send({ t: 'selection', compId: state.compId, layers: state.selection });
+    if (!state.connected) return;
+    var msg = { t: 'selection', compId: state.compId, layers: state.selection };
+    if (state.myHash && state.hashComp === state.compSid) msg.hash = state.myHash;
+    send(msg);
   }
 
   function handleCycle(out, applied, forced) {
@@ -1599,6 +1623,7 @@
       if (!out.r[i]) continue;
       state.applyFails = (state.applyFails || 0) + 1;
       logThrottled('applyfail:' + applied[i].kind + ':' + String(out.r[i]).slice(0, 40), 'apply failed: ' + applied[i].kind + ' ' + (applied[i].path || '') + ' - ' + out.r[i], 3000);
+      if (repairable(out.r[i])) requestRepair(applied[i], String(out.r[i]));
     }
     var snaps = out.snaps || [];
     var active = null;
@@ -1755,6 +1780,158 @@
       changed = true;
     }
     return changed;
+  }
+
+  // --------------------------------------------------------------- self-repair
+  // Each panel publishes a fingerprint of the comp it has open. When two
+  // fingerprints still disagree after things have gone quiet, the peer with the
+  // higher id asks the one with the lowest id (the reference) for the layers
+  // that differ, and the reference answers with whole layers. An edit that
+  // could not be applied triggers the same request straight away.
+  var REPAIR_TICK_MS = 2000;
+  var REPAIR_QUIET_MS = 4000;
+  var REPAIR_GAP_MS = 10000;
+  var REPAIR_NEED_TTL_MS = 90000;
+  var REPAIR_MAX_PER_LAYER = 2;
+  var REPAIR_WINDOW_MS = 300000;
+
+  function quietFor() {
+    return Date.now() - Math.max(state.lastSyncAt || 0, state.lastChangeAt || 0);
+  }
+
+  // Nothing of ours is unacknowledged and nothing of theirs is unapplied.
+  // Repairs only ever compare two peers that are both in this state.
+  function caughtUp() {
+    return state.inbox.length === 0 && !state.cycleBusy && !state.stampJob && !hasKeys(state.awaiting) && quietFor() >= REPAIR_TICK_MS;
+  }
+
+  function sendNeed(compId, to, layers, full) {
+    send({ t: 'op', op: { opId: randomHex(12), kind: 'need', target: { comp: compId }, value: { to: to, layers: layers, full: full ? 1 : 0 } } });
+  }
+
+  // A teammate's edit failed here because something it refers to is missing.
+  function requestRepair(op, reason) {
+    if (!op._from || !op.target) return;
+    var key = Sync.sidPart(op.target.comp) + '|' + (op.target.layer || '');
+    var now = Date.now();
+    var seen = state.repairAsked[key] || [];
+    while (seen.length > 0 && now - seen[0] > 60000) seen.shift();
+    if (seen.length >= REPAIR_MAX_PER_LAYER) return;
+    seen.push(now);
+    state.repairAsked[key] = seen;
+    var layers = null;
+    if (op.target.layer && reason.indexOf('comp not found') < 0) {
+      layers = {};
+      layers[op.target.layer] = '';
+    }
+    log('repair: asking for ' + (layers ? 'a layer' : 'the comp') + ' again (' + reason + ')');
+    sendNeed(op.target.comp, op._from, layers);
+  }
+
+  function repairable(reason) {
+    var r = String(reason);
+    if (r.indexOf('unavailable') >= 0 || r.indexOf('media not found') >= 0) return false;
+    return r.indexOf('not found') >= 0;
+  }
+
+  function answerNeed(need) {
+    var op = need.op;
+    if (!caughtUp()) return false;
+    var compSid = Sync.sidPart(op.target.comp);
+    var shadow = state.shadows[compSid];
+    if (!shadow) {
+      // Not read yet: read it whole, then answer.
+      state.fullNext[compSid] = 1;
+      state.readQueue.push(compSid);
+      kickCycle(0);
+      return false;
+    }
+    var theirs = op.value.layers;
+    var mine = Sync.digest(shadow);
+    var ops = [];
+    var now = Date.now();
+    var i;
+    if (!theirs) {
+      for (i = 0; state.shadowItems && i < state.shadowItems.length; i++) {
+        if (state.shadowItems[i].sid === compSid) ops.push({ opId: randomHex(12), kind: 'iadd', target: { comp: compSid }, value: state.shadowItems[i] });
+      }
+    }
+    var have = {};
+    for (i = 0; i < shadow.layers.length; i++) {
+      var layer = shadow.layers[i];
+      have[layer.sid] = 1;
+      if (theirs && !op.value.full && !(layer.sid in theirs)) continue;
+      if (theirs && theirs[layer.sid] === mine.layers[layer.sid]) continue;
+      var key = need.author + '|' + compSid + '|' + layer.sid;
+      var sent = state.repairSent[key] || [];
+      while (sent.length > 0 && now - sent[0] > REPAIR_WINDOW_MS) sent.shift();
+      if (sent.length >= REPAIR_MAX_PER_LAYER) continue;
+      sent.push(now);
+      state.repairSent[key] = sent;
+      ops.push({ opId: randomHex(12), kind: 'add', target: { comp: shadow.id, layer: layer.sid }, value: { after: i > 0 ? shadow.layers[i - 1].sid : '', layer: layer } });
+    }
+    // A layer they have and we do not is never deleted by a repair (it may be
+    // one this machine simply could not create). Ask them for it instead.
+    var missing = null;
+    for (var sid in theirs) {
+      if (have[sid] || theirs[sid] === '') continue;
+      var askKey = compSid + '|' + sid;
+      var asked = state.repairAsked[askKey] || [];
+      while (asked.length > 0 && now - asked[0] > REPAIR_WINDOW_MS) asked.shift();
+      if (asked.length >= REPAIR_MAX_PER_LAYER) continue;
+      asked.push(now);
+      state.repairAsked[askKey] = asked;
+      missing = missing || {};
+      missing[sid] = '';
+    }
+    if (missing) sendNeed(shadow.id, need.author, missing);
+    if (ops.length === 0) return true;
+    if (theirs && op.value.full) {
+      for (i = 0; i < shadow.layers.length; i++) {
+        ops.push({ opId: randomHex(12), kind: 'reorder', target: { comp: shadow.id, layer: shadow.layers[i].sid }, value: { after: i > 0 ? shadow.layers[i - 1].sid : '' } });
+      }
+    }
+    if (!theirs || op.value.full) for (var field in shadow.s) ops.push({ opId: randomHex(12), kind: 'comp', target: { comp: shadow.id }, path: field, value: shadow.s[field] });
+    log('repair: sending ' + ops.length + ' op(s) to bring a teammate back in step');
+    sendOps(ops);
+    return true;
+  }
+
+  function repairTick() {
+    if (!state.connected || !Sync || !inAE) return;
+    var now = Date.now();
+    var i;
+    for (i = state.needs.length - 1; i >= 0; i--) {
+      if (now - state.needs[i].at > REPAIR_NEED_TTL_MS || answerNeed(state.needs[i])) state.needs.splice(i, 1);
+    }
+    var shadow = state.compSid ? state.shadows[state.compSid] : null;
+    if (!shadow || !caughtUp()) return;
+    var mine = Sync.digest(shadow);
+    if (mine.hash !== state.myHash || state.hashComp !== state.compSid) {
+      state.myHash = mine.hash;
+      state.hashComp = state.compSid;
+      announceSelection();
+    }
+    var reference = state.selfId;
+    var referenceHash = mine.hash;
+    var differs = false;
+    for (var id in state.members) {
+      var m = state.members[id];
+      if (id === state.selfId || !m.compHash || Sync.sidPart(m.compId) !== state.compSid) continue;
+      if (m.compHash !== mine.hash) differs = true;
+      if (id < reference) {
+        reference = id;
+        referenceHash = m.compHash;
+      }
+    }
+    if (!differs || reference === state.selfId || referenceHash === mine.hash) return;
+    if (quietFor() < REPAIR_QUIET_MS) return;
+    var pair = reference + ':' + referenceHash + ':' + mine.hash;
+    if (pair === state.lastNeedPair || now - state.lastNeedAt < REPAIR_GAP_MS) return;
+    state.lastNeedPair = pair;
+    state.lastNeedAt = now;
+    log('repair: this comp differs from ' + ((state.members[reference] && state.members[reference].name) || 'a teammate') + ' - asking for the difference');
+    sendNeed(shadow.id, reference, mine.layers, true);
   }
 
   // Two-instance test harness (tools/ae-pair). Inert unless

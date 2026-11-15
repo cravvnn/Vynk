@@ -271,5 +271,35 @@ function converges(name, prev, next) {
   check('structure ops have no LWW key', S.targetKey({ kind: 'add', target: { comp: 'id1|Main', layer: 'x' } }) === '');
 }
 
+// --- fingerprints (self-repair)
+{
+  const MAT = 'ADBE Material Options Group/ADBE Light Transmission';
+  const a = comp([layer('id1'), layer('id2')]);
+  const b = clone(a);
+  check('equal comps share a fingerprint', S.digest(a).hash === S.digest(b).hash);
+  b.layers[1].p[OPA] = { v: 99.9999999, m: 1 };
+  b.layers[1].p[OPA].v = 100.00001;
+  check('float noise and the modified flag do not change it', S.digest(a).hash === S.digest(b).hash);
+  b.layers[1].p[MAT] = { v: 0, m: 0 };
+  check('a default value only one machine read does not change it', S.digest(a).hash === S.digest(b).hash);
+  const c = clone(a);
+  c.layers[1].p[OPA] = { v: 40, m: 1 };
+  const da = S.digest(a);
+  const dc = S.digest(c);
+  check('a changed value changes the comp fingerprint', da.hash !== dc.hash);
+  check('...and only that layer\'s', da.layers.id1 === dc.layers.id1 && da.layers.id2 !== dc.layers.id2);
+  const d = clone(a);
+  d.layers.reverse();
+  check('layer order is part of it', S.digest(a).hash !== S.digest(d).hash);
+  const k1 = clone(a);
+  const k2 = clone(a);
+  k1.layers[0].p[OPA] = { k: [{ t: 0, v: 0, i: [6613, 6613], e: [[[0, 33]], [[0, 33]]] }], m: 1 };
+  k2.layers[0].p[OPA] = { k: [{ t: 0, v: 0, i: [6613, 6613], e: [[[0, 34]], [[0, 34]]] }], m: 1 };
+  check('recomputed eases do not change it', S.digest(k1).hash === S.digest(k2).hash);
+  const e = clone(a);
+  e.layers[0].a.blendingMode = 5220;
+  check('attributes are part of it', S.digest(a).hash !== S.digest(e).hash);
+}
+
 console.log(failed === 0 ? '\nPASS' : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

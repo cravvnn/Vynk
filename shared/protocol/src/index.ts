@@ -29,6 +29,7 @@ export interface OpTarget {
 //   comp     one composition setting        path = field, value
 //   iadd/irm/iset  project items (comps, folders)
 //   batch    value.ops = EditOp[], applied atomically
+//   need     self-repair request: value.to = peer id, value.layers = { sid: fingerprint } | null
 // The kinds after 'batch' are protocol 1 and only kept for the relay's claim code.
 export type OpKind =
   | 'attr'
@@ -41,6 +42,7 @@ export type OpKind =
   | 'irm'
   | 'iset'
   | 'batch'
+  | 'need'
   | 'set'
   | 'add'
   | 'remove'

@@ -24,7 +24,7 @@ $.global.vynkSync = (function () {
     'ADBE Transform Group': 1, 'ADBE Material Options Group': 1, 'ADBE Audio Group': 1, 'ADBE Plane Options Group': 1,
     'ADBE Extrsn Options Group': 1, 'ADBE Camera Options Group': 1, 'ADBE Light Options Group': 1
   };
-  var NO_PRUNE = { 'ADBE Text Properties': 1, 'ADBE Transform Group': 1 };
+  var NO_PRUNE = { 'ADBE Text Properties': 1, 'ADBE Transform Group': 1, 'ADBE Camera Options Group': 1, 'ADBE Light Options Group': 1 };
 
   var BOOL_ATTRS = [
     'enabled', 'threeDLayer', 'adjustmentLayer', 'guideLayer', 'motionBlur', 'collapseTransformation',
@@ -88,13 +88,26 @@ $.global.vynkSync = (function () {
   function sidOf(obj) {
     var stamp = null;
     try { stamp = readStamp(obj.comment); } catch (e0) {}
-    if (stamp) return 'st' + stamp;
+    if (stamp) {
+      // "=id30......." re-creates an object that is id30 on the machines that
+      // still have the original (see stampFor).
+      if (stamp.charAt(0) === '=') return stamp.substring(1).replace(/\.+$/, '');
+      return 'st' + stamp;
+    }
     var id;
     try { id = obj.id; } catch (e) { id = null; }
     if (typeof id === 'number') return 'id' + id;
     var fresh = randHex(STAMP_LEN);
     try { writeStamp(obj, fresh); } catch (e2) {}
     return 'st' + fresh;
+  }
+
+  // The stamp that makes a newly created object answer to this sid.
+  function stampFor(sid) {
+    if (sid.indexOf('st') === 0) return sid.substring(2);
+    var out = '=' + sid;
+    while (out.length < STAMP_LEN) out += '.';
+    return out;
   }
 
   function sidPart(key) {
@@ -193,7 +206,7 @@ $.global.vynkSync = (function () {
         }
         if (!item) item = app.project.items.addFolder(String(v.name || 'Folder'));
       }
-      if (sid.indexOf('st') === 0) writeStamp(item, sid.substring(2));
+      writeStamp(item, stampFor(sid));
       itemCache = null;
     }
     try { setItemParent(item, String(v.parent || '')); } catch (e) {}
@@ -896,7 +909,7 @@ $.global.vynkSync = (function () {
       } else {
         return 'unsupported layer kind ' + d.kind;
       }
-      if (sid.indexOf('st') === 0) writeStamp(layer, sid.substring(2));
+      writeStamp(layer, stampFor(sid));
     }
     var i;
     for (i = 0; i < ATTR_ORDER.length; i++) {

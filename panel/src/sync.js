@@ -473,6 +473,82 @@
     return '';
   }
 
+  // ---- fingerprints (self-repair)
+  function fnv(str, h) {
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return h;
+  }
+
+  function canon(v) {
+    if (v === null || v === undefined) return 'n';
+    if (typeof v === 'number') return String(Math.round(v * 1000) / 1000);
+    if (typeof v === 'string') return JSON.stringify(v);
+    if (typeof v === 'boolean') return v ? '1' : '0';
+    var out;
+    var i;
+    if (Object.prototype.toString.call(v) === '[object Array]') {
+      out = '[';
+      for (i = 0; i < v.length; i++) out += canon(v[i]) + ',';
+      return out + ']';
+    }
+    var keys = [];
+    for (var k in v) keys.push(k);
+    keys.sort();
+    out = '{';
+    for (i = 0; i < keys.length; i++) out += keys[i] + ':' + canon(v[keys[i]]) + ',';
+    return out + '}';
+  }
+
+  var ALWAYS_READ = { 'ADBE Transform Group': 1, 'ADBE Text Properties': 1, 'ADBE Camera Options Group': 1, 'ADBE Light Options Group': 1 };
+
+  // Two machines must get the same fingerprint for the same layer, so it
+  // leaves out what legitimately differs: values a machine did not read
+  // because the group is untouched there, and key eases/tangents that After
+  // Effects recomputes.
+  function layerHash(layer) {
+    var h = 2166136261;
+    h = fnv(layer.sid + '|' + canon(layer.a), h);
+    var paths = [];
+    var path;
+    for (path in layer.g) paths.push(path);
+    paths.sort();
+    for (var i = 0; i < paths.length; i++) h = fnv('g' + paths[i] + canon(layer.g[paths[i]]), h);
+    paths = [];
+    for (path in layer.p) paths.push(path);
+    paths.sort();
+    for (i = 0; i < paths.length; i++) {
+      path = paths[i];
+      var rec = layer.p[path];
+      if (!rec.m) {
+        var slash = path.indexOf('/');
+        var top = slash < 0 ? path : path.substring(0, slash);
+        if (slash >= 0 && !ALWAYS_READ[top] && !(top in layer.g)) continue;
+      }
+      var body = (rec.sep ? 's' : '') + (rec.x ? 'x' + rec.x + (rec.xo ? '1' : '0') : '');
+      if (rec.k) {
+        for (var k = 0; k < rec.k.length; k++) body += 'k' + canon(rec.k[k].t) + canon(rec.k[k].v) + canon(rec.k[k].i || []);
+      } else if (!rec.big) {
+        body += 'v' + canon(rec.v);
+      }
+      h = fnv('p' + path + body, h);
+    }
+    return (h >>> 0).toString(16);
+  }
+
+  function digest(comp) {
+    var layers = {};
+    var h = fnv(canon(comp.s), 2166136261);
+    for (var i = 0; i < comp.layers.length; i++) {
+      var lh = layerHash(comp.layers[i]);
+      layers[comp.layers[i].sid] = lh;
+      h = fnv(comp.layers[i].sid + lh, h);
+    }
+    return { hash: (h >>> 0).toString(16), layers: layers };
+  }
+
   var KINDS = { attr: 1, prop: 1, gadd: 1, grm: 1, gmv: 1, add: 1, remove: 1, reorder: 1, comp: 1, iadd: 1, irm: 1, iset: 1 };
 
   root.VynkSync = {
@@ -483,6 +559,8 @@
     adoptItems: adoptItems,
     unstampedItems: unstampedItems,
     emptyComp: emptyComp,
+    digest: digest,
+    layerHash: layerHash,
     targetKey: targetKey,
     sidPart: sidPart,
     recEq: recEq,

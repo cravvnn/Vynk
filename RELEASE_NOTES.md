@@ -19,6 +19,10 @@ Everyone in a room must update: 0.8 and 0.7 panels cannot share a session.
   layer syncing for the rest of the session, and edits could bounce or get lost. *After:*
   each client tracks the shared state exactly and corrects itself; when two people change
   the same value, the later edit wins for everyone.
+- **Projects that drift apart repair themselves.** *Before:* if an edit could not be
+  applied on one machine, the two projects stayed different for the rest of the session.
+  *After:* the panels compare notes in the background and the missing or different layers
+  are sent across again.
 - **A teammate's change is one undo step.** *Before:* a single drag could land as several
   separate changes. *After:* each gesture arrives whole.
 - **Sync keeps running when you switch apps.** *Before:* incoming edits waited until After

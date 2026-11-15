@@ -351,6 +351,10 @@ async function main() {
       const opsBefore = obs.ops.length;
       const pre = await dump(sc.who);
       let note = '';
+      if (sc.before) {
+        const got = await js(sc.before.who, sc.before.js);
+        if (got !== 'ok') note = 'before: ' + got;
+      }
       const runs = [jsx(sc.who, wrap(sc.jsx, sc.select))];
       if (sc.also) runs.push(jsx(sc.also.who, wrap(sc.also.jsx, sc.select)));
       const outs = await Promise.all(runs);

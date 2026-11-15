@@ -402,6 +402,12 @@ function handleOp(peer: Peer, op: EditOp): void {
       room.claims.delete(key);
     }
   }
+  // A repair request is a question between two live peers, not an edit: relay
+  // it, but keep it out of the log so it is never replayed to a late joiner.
+  if (op.kind === 'need') {
+    broadcast(room, { t: 'op', seq: room.seq, author: peer.id, ts: nowMs(), op });
+    return;
+  }
   room.seq++;
   const logged: LoggedOp = { seq: room.seq, author: peer.id, ts: nowMs(), op };
   room.log.push(logged);

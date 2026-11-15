@@ -19,9 +19,14 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
   guide/adjustment flags, collapse transformations, comments, cameras and lights as layers.
 - **Whole-project sync.** Edits in comps that are not open, new comps, folders, renames,
   moving items between folders and precompose all sync. Previously only the active comp did.
+- **Self-repair.** Each panel publishes a fingerprint of the comp it has open. When two
+  fingerprints still differ after both sides have caught up, the peer with the higher id
+  asks the lowest-id peer for the layers that differ and gets whole layers back. An edit
+  that cannot be applied because its layer or comp is missing triggers the same request
+  immediately. A repair never deletes a layer, and requests are relayed but not logged.
 - **Two-instance convergence harness** (`npm run test:pair`): runs two real After Effects
   versions against a private relay, makes scripted edits in one and compares a full
-  independent dump of both projects. 64 scenarios including a 100-layer stress comp.
+  independent dump of both projects. 66 scenarios including a 100-layer stress comp.
 - `tools/test-sync.mjs`: unit tests for the new diff/adopt model.
 
 ### Changed
