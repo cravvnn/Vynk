@@ -3,6 +3,8 @@
 Models use the pinned development-only tla-ts checker. Run `npm run check:tla`.
 Each bounded model names its callers, assumptions, and exclusions beside its code.
 Passing a model proves only the listed rules inside those bounds.
+The runner normalizes source line endings before applying guard mutations; its
+own regression checks LF/CRLF files through absolute and relative CLI paths.
 
 | Component | State and risk | Model / status |
 | --- | --- | --- |

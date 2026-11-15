@@ -28,6 +28,8 @@ const sharedDir = path.join(toolsDir, 'modules')
 // Directories never walked for specs.
 const skipDirs = new Set(['node_modules', 'vendor', 'dist', 'build', 'testdata'])
 
+const readSource = (file) => fs.readFileSync(file, 'utf8').replace(/\r\n?/g, '\n')
+
 // modelsInDir yields { spec, config } for each config directly in dir.
 function* modelsInDir(dir, names) {
   const stems = names
@@ -70,7 +72,7 @@ function moduleLoader(spec) {
   return (name) => {
     for (const dir of dirs) {
       const file = path.join(dir, `${name}.tla`)
-      if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8')
+      if (fs.existsSync(file)) return readSource(file)
     }
     return undefined
   }
@@ -238,7 +240,7 @@ async function main(argv) {
     else if (a === '-workers') workers = Number(argv[++i])
     else if (a.startsWith('-')) return fail(`unknown flag ${a}`)
     else if (!fs.existsSync(a)) return fail(`no such path: ${a}`)
-    else paths.push(a)
+    else paths.push(path.resolve(a))
   }
   if (!Number.isInteger(workers) || workers < 1)
     return fail('-workers takes a positive integer')
@@ -250,7 +252,7 @@ async function main(argv) {
     for (const m of findModels(target)) {
       found++
       models++
-      const source = fs.readFileSync(m.spec, 'utf8')
+      const source = readSource(m.spec)
       const r = await run(m.spec, source, m.config, workers)
       printResult(json, 'model', path.relative('.', m.config), r)
       if (!r.ok) failed++
