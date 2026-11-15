@@ -122,6 +122,16 @@
     catchupLogged: false,
     shadows: {},
     needs: [],
+    editedAt: 0,
+    roundStartedAt: 0,
+    parked: {},
+    peerSums: {},
+    verifiedAt: {},
+    mismatchAt: {},
+    needSent: {},
+    needSentAt: {},
+    lastSumAt: 0,
+    lastSumSig: '',
     resend: {},
     trailOn: false,
     trailAt: 0,
@@ -503,6 +513,7 @@
           checkMemberProject(member);
         } else {
           delete state.members[member.id];
+          delete state.peerSums[member.id];
           var idx = state.order.indexOf(member.id);
           if (idx >= 0) state.order.splice(idx, 1);
           log(member.name + ' left');
@@ -1204,6 +1215,10 @@
     state.compSid = null;
     state.shadows = {};
     state.shadowItems = null;
+    state.parked = {};
+    state.mismatchAt = {};
+    state.needSent = {};
+    state.lastSumSig = '';
     state.resend = { '*': 1 };
     state.agreed = {};
     state.deepQueue = {};
@@ -1383,6 +1398,10 @@
         state.seenOpCount = 0;
       }
     }
+    if (op.kind === 'sum') {
+      if (op.value && op.value.comps) state.peerSums[msg.author] = { at: Date.now(), comps: op.value.comps };
+      return;
+    }
     if (op.kind === 'need') {
       if (inAE && op.value && op.value.to === state.selfId && op.target) {
         state.needs.push({ op: op, author: msg.author, at: Date.now() });
@@ -1487,10 +1506,12 @@
     var comps = state.compSids;
     state.sweepComp = null;
     if (state.sweeping && comps.length > 0 && state.sweepIdx >= comps.length) {
-      // Went all the way round: every comp has been looked at.
-      state.sweeping = false;
+      // Went all the way round. Done only if nothing was edited since the
+      // round began: an edit behind the sweep needs another round.
       state.sweepIdx = 0;
       state.sweepLayer = 0;
+      if (state.editedAt > state.roundStartedAt) state.roundStartedAt = Date.now();
+      else state.sweeping = false;
     }
     if (state.sweeping && comps.length > 0) {
       state.sweepComp = comps[state.sweepIdx];
@@ -1590,6 +1611,15 @@
           state.trailOn = true;
           state.trailAt = 0;
         }
+        // Edits in comps that are not open can only be found by looking, so
+        // any edit keeps the background pass going until a quiet full round.
+        if (edited && !out.same) {
+          state.editedAt = Date.now();
+          if (!state.sweeping) {
+            state.sweeping = true;
+            state.roundStartedAt = Date.now();
+          }
+        }
         if (typeof out.rev === 'number' && !state.resetPending) state.rev = out.rev;
         state.resetPending = false;
         if (changed) state.lastChangeAt = Date.now();
@@ -1681,9 +1711,25 @@
     var sid;
     for (i = 0; i < applied.length; i++) {
       if (!out.r[i]) continue;
+      if (out.r[i] === 'needs the comp open') {
+        // Layer styles can only be added in the comp that is in the viewer.
+        var parkSid = Sync.sidPart(applied[i].target.comp);
+        var parked = state.parked[parkSid] || (state.parked[parkSid] = []);
+        var pk = Sync.targetKey(applied[i]);
+        for (var pj = parked.length - 1; pj >= 0; pj--) {
+          if (Sync.targetKey(parked[pj]) === pk) parked.splice(pj, 1);
+        }
+        parked.push(applied[i]);
+        logThrottled('parked:' + parkSid, 'a teammate changed layer styles in a comp you do not have open - they apply when you open it', 30000);
+        continue;
+      }
       state.applyFails = (state.applyFails || 0) + 1;
       logThrottled('applyfail:' + applied[i].kind + ':' + String(out.r[i]).slice(0, 40), 'apply failed: ' + applied[i].kind + ' ' + (applied[i].path || '') + ' - ' + out.r[i], 3000);
       if (repairable(out.r[i])) requestRepair(applied[i], String(out.r[i]));
+    }
+    if (out.viewer && out.active && state.parked[out.active]) {
+      state.inbox.unshift(state.parked[out.active]);
+      delete state.parked[out.active];
     }
     var snaps = out.snaps || [];
     var active = null;
@@ -1768,6 +1814,7 @@
         }
         state.sweepComp = null;
       }
+      if (snap.full) state.verifiedAt[compSid] = Date.now();
       var shadow = state.shadows[compSid];
       if (!shadow || !live) {
         if (snap.full) {
@@ -1995,6 +2042,71 @@
     return true;
   }
 
+  // Every comp this panel knows, not only the open one: each panel publishes a
+  // fingerprint per comp, and a comp that still differs from the reference
+  // after being re-read in full here is repaired like the open one.
+  var SUM_EVERY_MS = 15000;
+  var SUM_MIN_GAP_MS = 3000;
+  var SUM_STALE_MS = 60000;
+
+  function sendSums(now) {
+    if (now - state.lastSumAt < SUM_MIN_GAP_MS || quietFor() < REPAIR_TICK_MS) return;
+    var comps = {};
+    var any = false;
+    for (var sid in state.shadows) {
+      comps[sid] = Sync.digest(state.shadows[sid]).hash;
+      any = true;
+    }
+    if (!any) return;
+    var sig = JSON.stringify(comps);
+    if (sig === state.lastSumSig && now - state.lastSumAt < SUM_EVERY_MS) return;
+    state.lastSumSig = sig;
+    state.lastSumAt = now;
+    send({ t: 'op', op: { opId: randomHex(12), kind: 'sum', target: { comp: '' }, value: { comps: comps } } });
+  }
+
+  function projectRepair(now) {
+    if (quietFor() < REPAIR_QUIET_MS) return;
+    for (var compSid in state.shadows) {
+      var reference = state.selfId;
+      var refHash = '';
+      for (var id in state.peerSums) {
+        var sum = state.peerSums[id];
+        if (!state.members[id] || now - sum.at > SUM_STALE_MS || !(compSid in sum.comps)) continue;
+        if (olderThan(id, reference)) {
+          reference = id;
+          refHash = sum.comps[compSid];
+        }
+      }
+      if (reference === state.selfId) continue;
+      var shadow = state.shadows[compSid];
+      var mine = Sync.digest(shadow);
+      if (mine.hash === refHash) {
+        state.agreed[compSid] = 1;
+        delete state.mismatchAt[compSid];
+        continue;
+      }
+      // Re-read the comp in full first: anything changed here that was not
+      // noticed yet is then sent as an edit instead of being overwritten.
+      if (!state.mismatchAt[compSid] || (state.verifiedAt[compSid] || 0) <= state.mismatchAt[compSid]) {
+        if (!state.mismatchAt[compSid]) {
+          state.mismatchAt[compSid] = now;
+          state.fullNext[compSid] = 1;
+          state.readQueue.push(compSid);
+          kickCycle(0);
+        }
+        continue;
+      }
+      var pair = reference + ':' + refHash + ':' + mine.hash;
+      if (state.needSent[compSid] === pair && now - (state.needSentAt[compSid] || 0) < 30000) continue;
+      state.needSent[compSid] = pair;
+      state.needSentAt[compSid] = now;
+      delete state.mismatchAt[compSid];
+      log('repair: ' + compLabel(shadow.id) + ' differs from ' + ((state.members[reference] && state.members[reference].name) || 'a teammate') + ' - asking for the difference');
+      sendNeed(shadow.id, reference, mine.layers, true);
+    }
+  }
+
   function repairTick() {
     if (!state.connected || !Sync || !inAE) return;
     var now = Date.now();
@@ -2011,6 +2123,10 @@
       if (eldest !== state.selfId) {
         send({ t: 'op', op: { opId: randomHex(12), kind: 'need', target: { comp: '' }, value: { to: eldest, items: 1 } } });
       }
+    }
+    if (caughtUp()) {
+      sendSums(now);
+      projectRepair(now);
     }
     var shadow = state.compSid ? state.shadows[state.compSid] : null;
     if (!shadow || !caughtUp()) return;

@@ -75,6 +75,12 @@
     return valuesNear(a.v, b.v);
   }
 
+  var STYLES = 'ADBE Layer Styles';
+
+  function isStyles(path) {
+    return path === STYLES + '@styles';
+  }
+
   function sidPart(key) {
     var s = String(key || '');
     var idx = s.indexOf('|');
@@ -201,7 +207,14 @@
 
     var keep = null;
     var path;
+    // Which layer styles exist must arrive before their values.
+    var paths = [];
     for (path in next.p) {
+      if (isStyles(path)) paths.unshift(path);
+      else paths.push(path);
+    }
+    for (i = 0; i < paths.length; i++) {
+      path = paths[i];
       if (added.length && withinAny(path, added)) continue;
       var a = prev.p[path];
       var b = next.p[path];
@@ -214,6 +227,8 @@
     for (path in prev.p) {
       if (path in next.p) continue;
       if (removed.length && withinAny(path, removed)) continue;
+      // A layer style that was removed takes its values with it.
+      if (path.lastIndexOf(STYLES + '/', 0) === 0) continue;
       // A modified value vanished without its group being removed: the group
       // was reset to defaults and is no longer read. Ask for an unpruned read
       // so the default values are diffed and sent.

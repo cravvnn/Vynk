@@ -30,6 +30,7 @@ export interface OpTarget {
 //   iadd/irm/iset  project items (comps, folders)
 //   batch    value.ops = EditOp[], applied atomically
 //   need     self-repair request: value.to = peer id, value.layers = { sid: fingerprint } | null
+//   sum      per-comp fingerprints { comps: { compSid: hash } }, relayed but not logged
 export type OpKind =
   | 'attr'
   | 'prop'
@@ -42,6 +43,7 @@ export type OpKind =
   | 'iset'
   | 'batch'
   | 'need'
+  | 'sum'
   | 'add'
   | 'remove'
   | 'reorder';

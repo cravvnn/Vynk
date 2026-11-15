@@ -16,9 +16,28 @@ $.global.vynkSync = (function () {
     'ADBE MTrackers': 1,
     'ADBE Data Group': 1,
     'ADBE Layer Overrides': 1,
-    'ADBE Layer Sets': 1,
-    'ADBE Layer Styles': 1
+    'ADBE Layer Sets': 1
   };
+
+  // Layer styles are a fixed set of slots; a style is applied when its slot
+  // can be switched on. Scripts can only add one through the Layer > Layer
+  // Styles menu (on the selected layers of the comp in the viewer) and can only
+  // remove them all at once. Command ids are used rather than menu names, which
+  // are localized.
+  var STYLES = 'ADBE Layer Styles';
+  var STYLE_CMD = {
+    'dropShadow/enabled': 9000,
+    'innerShadow/enabled': 9001,
+    'outerGlow/enabled': 9002,
+    'innerGlow/enabled': 9003,
+    'bevelEmboss/enabled': 9004,
+    'chromeFX/enabled': 9005,
+    'solidFill/enabled': 9006,
+    'gradientFill/enabled': 9007,
+    'frameFX/enabled': 9008
+  };
+  var CMD_REMOVE_STYLES = 2072;
+  var NEEDS_VIEWER = 'needs the comp open';
 
   var BUILT_IN = {
     'ADBE Transform Group': 1, 'ADBE Material Options Group': 1, 'ADBE Audio Group': 1, 'ADBE Plane Options Group': 1,
@@ -356,7 +375,7 @@ $.global.vynkSync = (function () {
     for (var i = 1; i <= n; i++) {
       var mn = group.property(i).matchName;
       seen[mn] = (seen[mn] || 0) + 1;
-      out.push(mn + (seen[mn] > 1 ? '#' + seen[mn] : ''));
+      out.push(enc(mn) + (seen[mn] > 1 ? '#' + seen[mn] : ''));
     }
     return out;
   }
@@ -374,8 +393,12 @@ $.global.vynkSync = (function () {
       if (!p) continue;
       var mn = p.matchName;
       if (depth === 0 && SKIP_TOP[mn]) continue;
+      if (depth === 0 && mn === STYLES) {
+        readStyles(p, mn, force, out, groups);
+        continue;
+      }
       seen[mn] = (seen[mn] || 0) + 1;
-      var key = mn + (seen[mn] > 1 ? '#' + seen[mn] : '');
+      var key = enc(mn) + (seen[mn] > 1 ? '#' + seen[mn] : '');
       var path = prefix ? prefix + '/' + key : key;
       var isLeaf = true;
       try { isLeaf = p.propertyType === PT_PROPERTY; } catch (e2) {}
@@ -407,6 +430,102 @@ $.global.vynkSync = (function () {
       walk(p, path, depth + 1, force, out, groups);
     }
     if (indexed) groups[prefix] = kids;
+  }
+
+  // Paths are matchNames joined by "/", and a few matchNames (layer style
+  // properties) contain "/" themselves.
+  function enc(mn) {
+    return mn.indexOf('/') < 0 ? mn : mn.split('/').join('%2F');
+  }
+
+  function dec(key) {
+    return key.indexOf('%2F') < 0 ? key : key.split('%2F').join('/');
+  }
+
+  function readStyles(group, path, force, out, groups) {
+    var applied = false;
+    try { applied = group.canSetEnabled; } catch (e) { applied = false; }
+    if (!applied) {
+      out[path + '@styles'] = { v: [], m: 0 };
+      return;
+    }
+    var list = [];
+    out[path + '@on'] = { v: group.enabled ? 1 : 0, m: 1 };
+    for (var i = 1; i <= group.numProperties; i++) {
+      var c = group.property(i);
+      var cpath = path + '/' + enc(c.matchName);
+      if (c.matchName === 'ADBE Blend Options Group') {
+        walk(c, cpath, 1, force, out, groups);
+        continue;
+      }
+      var on = false;
+      try { on = c.canSetEnabled; } catch (e1) { on = false; }
+      if (!on) continue;
+      list.push(c.matchName);
+      out[cpath + '@on'] = { v: c.enabled ? 1 : 0, m: 1 };
+      walk(c, cpath, 1, force, out, groups);
+    }
+    out[path + '@styles'] = { v: list, m: 1 };
+  }
+
+  function appliedStyles(group) {
+    var list = [];
+    try {
+      if (!group.canSetEnabled) return list;
+    } catch (e) {
+      return list;
+    }
+    for (var i = 1; i <= group.numProperties; i++) {
+      var c = group.property(i);
+      try { if (c.canSetEnabled && STYLE_CMD[c.matchName]) list.push(c.matchName); } catch (e1) {}
+    }
+    return list;
+  }
+
+  function hasItem(list, x) {
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] === x) return true;
+    }
+    return false;
+  }
+
+  function setStyles(layer, want) {
+    var group = layer.property(STYLES);
+    if (!group) return 'no layer styles';
+    var have = appliedStyles(group);
+    var i;
+    var extra = false;
+    var missing = [];
+    for (i = 0; i < have.length; i++) {
+      if (!hasItem(want, have[i])) extra = true;
+    }
+    for (i = 0; i < want.length; i++) {
+      if (!hasItem(have, want[i])) missing.push(want[i]);
+    }
+    if (!extra && missing.length === 0) return '';
+    for (i = 0; i < missing.length; i++) {
+      if (!STYLE_CMD[missing[i]]) return 'style not scriptable: ' + missing[i];
+    }
+    var comp = layer.containingComp;
+    if (app.project.activeItem !== comp) return NEEDS_VIEWER;
+    for (i = 1; i <= comp.numLayers; i++) {
+      var other = comp.layer(i);
+      if (other.selected !== (other === layer)) other.selected = (other === layer);
+    }
+    // The Layer Styles menu only acts when the comp's viewer has focus (the
+    // comp is already the active one, so this does not change what is shown).
+    try { comp.openInViewer(); } catch (eV) {}
+    try { if (app.activeViewer) app.activeViewer.setActive(); } catch (eA) {}
+    if (extra) {
+      app.executeCommand(CMD_REMOVE_STYLES);
+      missing = want.slice(0);
+    }
+    for (i = 0; i < missing.length; i++) app.executeCommand(STYLE_CMD[missing[i]]);
+    var now = appliedStyles(layer.property(STYLES));
+    for (i = 0; i < want.length; i++) {
+      if (!hasItem(now, want[i])) return 'style not applied: ' + want[i];
+    }
+    return '';
   }
 
   function layerKind(layer) {
@@ -602,10 +721,10 @@ $.global.vynkSync = (function () {
 
   function splitKey(key) {
     var hash = key.lastIndexOf('#');
-    if (hash < 0) return { mn: key, n: 1 };
+    if (hash < 0) return { mn: dec(key), n: 1 };
     var n = parseInt(key.substring(hash + 1), 10);
-    if (!(n > 0)) return { mn: key, n: 1 };
-    return { mn: key.substring(0, hash), n: n };
+    if (!(n > 0)) return { mn: dec(key), n: 1 };
+    return { mn: dec(key.substring(0, hash)), n: n };
   }
 
   function childByKey(group, key, create) {
@@ -763,6 +882,7 @@ $.global.vynkSync = (function () {
   function applyPath(layer, path, rec) {
     var at = path.lastIndexOf('@');
     var suffix = at > 0 ? path.substring(at) : '';
+    if (suffix === '@styles') return setStyles(layer, rec.v || []);
     if (suffix === '@on' || suffix === '@name' || suffix === '@mask') {
       var group = resolve(layer, path.substring(0, at), false);
       if (!group) return 'group not found: ' + path;
@@ -821,8 +941,14 @@ $.global.vynkSync = (function () {
         if (group && group.propertyType === PT_INDEXED) ensureChildren(group, g[paths[i]]);
       } catch (e) { fails++; }
     }
+    var ordered = [];
     for (path in p) {
       if (!p.hasOwnProperty(path)) continue;
+      if (path.length > 7 && path.substring(path.length - 7) === '@styles') ordered.unshift(path);
+      else ordered.push(path);
+    }
+    for (var oi = 0; oi < ordered.length; oi++) {
+      path = ordered[oi];
       // A layer just created already holds the defaults of its built-in groups
       // (effect defaults are not skipped: they can differ between machines).
       if (fresh && p[path].m === 0 && BUILT_IN[path.substring(0, path.indexOf('/'))]) continue;
@@ -1175,6 +1301,7 @@ $.global.vynkSync = (function () {
       activeOpts.force = req.force || null;
       if (item instanceof CompItem) {
         out.active = sidOf(item);
+        out.viewer = 1;
         done[out.active] = 1;
         out.snaps.push(readComp(item, activeOpts));
       } else if (activeOpts.c) {
