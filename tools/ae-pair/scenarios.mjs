@@ -120,11 +120,12 @@ export const scenarios = [
       await h.sleep(1500);
       const edit = "L('Blue').property('ADBE Transform Group').property('ADBE Scale').setValue([44, 44]); comp.layers.addSolid([0.3, 0.3, 0.9], 'WhileAway', 1920, 1080, 1, 10); L('Sun').remove(); app.project.items.addComp('MadeWhileAway', 800, 600, 1, 4, 25)";
       const out = await h.jsx('A', h.wrap(edit));
+      const expectedScale = await h.jsx('A', "JSON.stringify(vynkPair.layer(vynkPair.comp('Main'),'Blue').property('ADBE Transform Group').property('ADBE Scale').value)");
       await h.sleep(4000);
       await h.js('B', "later(function () { location.reload(); }, 50); 'ok'");
       await h.sleep(2500);
       await h.waitFor(() => h.obs.has('B'), 30000, 'B to rejoin');
-      if (!(await h.waitFor(async () => (await h.jsx('B', "(function(){var c=vynkPair.comp('Main');return vynkPair.comp('MadeWhileAway')&&vynkPair.layer(c,'WhileAway')&&!vynkPair.layer(c,'Sun')&&JSON.stringify(vynkPair.layer(c,'Blue').property('ADBE Transform Group').property('ADBE Scale').value)==='[44,44]'?'ready':'waiting';})()")) === 'ready', 45000, 'intended late-join edits'))) return 'ERR late join did not preserve the intended edits';
+      if (!(await h.waitFor(async () => (await h.jsx('B', "(function(){var c=vynkPair.comp('Main');return vynkPair.comp('MadeWhileAway')&&vynkPair.layer(c,'WhileAway')&&!vynkPair.layer(c,'Sun')&&JSON.stringify(vynkPair.layer(c,'Blue').property('ADBE Transform Group').property('ADBE Scale').value)===" + JSON.stringify(expectedScale) + "?'ready':'waiting';})()")) === 'ready', 45000, 'intended late-join edits'))) return 'ERR late join did not preserve the intended edits';
       return out;
     }
   },
