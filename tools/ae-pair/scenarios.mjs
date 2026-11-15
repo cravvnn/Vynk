@@ -3,6 +3,8 @@
 // name) and `vynkPair` in scope. `who` is the instance that makes the edit.
 export const scenarios = [
   { name: 'set position', who: 'A', jsx: `L('Red').property('ADBE Transform Group').property('ADBE Position').setValue([400, 300]);` },
+  // activeItem is empty or a non-comp whenever focus is outside a comp viewer.
+  { name: 'edit while the Project panel has focus', who: 'A', jsx: `for (var f = 1; f <= app.project.numItems; f++) { var it = app.project.item(f); it.selected = (it instanceof FolderItem && it.name === 'Solids'); } L('Blue').property('ADBE Transform Group').property('ADBE Rotate Z').setValue(12);` },
   { name: 'set opacity/rotation/scale', who: 'A', jsx: `var t = L('Green').property('ADBE Transform Group'); t.property('ADBE Opacity').setValue(42); t.property('ADBE Rotate Z').setValue(33); t.property('ADBE Scale').setValue([50, 60]);` },
   { name: 'B edits position', who: 'B', jsx: `L('Blue').property('ADBE Transform Group').property('ADBE Position').setValue([111, 222]);` },
   { name: 'add 3 position keys', who: 'A', jsx: `var p = L('Blue').property('ADBE Transform Group').property('ADBE Position'); p.setValueAtTime(0, [100, 100]); p.setValueAtTime(1, [900, 500]); p.setValueAtTime(2, [300, 800]);` },

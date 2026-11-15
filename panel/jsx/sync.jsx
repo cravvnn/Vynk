@@ -1136,6 +1136,7 @@ $.global.vynkSync = (function () {
       out.rev = revBefore;
       try {
         var quiet = app.project.activeItem;
+        if (!(quiet instanceof CompItem) && req.active && req.active.c) quiet = findComp(req.active.c);
         if (quiet instanceof CompItem) {
           out.active = sidOf(quiet);
           out.aid = compKey(quiet);
@@ -1170,12 +1171,22 @@ $.global.vynkSync = (function () {
       var done = {};
       var item = null;
       try { item = app.project ? app.project.activeItem : null; } catch (e2) {}
+      var activeOpts = req.active || {};
+      activeOpts.force = req.force || null;
       if (item instanceof CompItem) {
         out.active = sidOf(item);
         done[out.active] = 1;
-        var activeOpts = req.active || {};
-        activeOpts.force = req.force || null;
         out.snaps.push(readComp(item, activeOpts));
+      } else if (activeOpts.c) {
+        // activeItem is empty whenever focus is in a panel that is not a comp
+        // (Project, Effect Controls, this panel...). The user is still working
+        // in the comp they were last in, so keep reading it the same way.
+        var lastComp = findComp(activeOpts.c);
+        if (lastComp) {
+          out.active = activeOpts.c;
+          done[activeOpts.c] = 1;
+          out.snaps.push(readComp(lastComp, activeOpts));
+        }
       }
       var read = req.read || [];
       for (i = 0; i < read.length; i++) {
