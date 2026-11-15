@@ -9,7 +9,7 @@ const time = process.argv[7] !== undefined ? Number(process.argv[7]) : undefined
 const ws = new WebSocket(process.env.URL || 'ws://127.0.0.1:8787/ws');
 
 ws.on('open', () => {
-  ws.send(JSON.stringify({ t: 'hello', proto: 1, room, name: 'Probe', aeVersion: 'probe' }));
+  ws.send(JSON.stringify({ t: 'hello', proto: 2, room, name: 'Probe', aeVersion: 'probe' }));
   console.log(
     `[probe] joined ${room}, sending ${kind} opacity=${value} to ${targetComp} / ${targetLayer}` +
       (time !== undefined ? ` at t=${time}` : '')

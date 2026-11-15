@@ -34,7 +34,7 @@ function req(method, p, body) {
 
 const room = 'BASET' + Math.floor(Math.random() * 900 + 100);
 const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
-ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', proto: 1, room, name: 'Host', aeVersion: '25.4' })));
+ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', proto: 2, room, name: 'Host', aeVersion: '25.4' })));
 ws.on('message', async (raw) => {
   const m = JSON.parse(raw.toString());
   if (m.t !== 'welcome') return;
@@ -75,7 +75,7 @@ ws.on('message', async (raw) => {
 function lateJoinOps() {
   return new Promise((resolve) => {
     const w = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
-    w.on('open', () => w.send(JSON.stringify({ t: 'hello', proto: 1, room, name: 'Late', aeVersion: '25.4' })));
+    w.on('open', () => w.send(JSON.stringify({ t: 'hello', proto: 2, room, name: 'Late', aeVersion: '25.4' })));
     w.on('message', (raw) => {
       const m = JSON.parse(raw.toString());
       if (m.t === 'welcome') {

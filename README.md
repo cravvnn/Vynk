@@ -10,13 +10,18 @@ optional base `.aep`; footage is resolved from your own storage.
 
 ## What syncs
 
-- **Layers** - add, remove, reorder, rename, parenting, enable, in/out points, motion
-  blur, frame blending and track mattes.
-- **Properties and keyframes** - including interpolation, eases and spatial tangents.
-- **Effects** - add, remove, enable, parameter changes and their keyframes.
-- **Masks**, **shape-layer contents**, **text documents** (opt-in) and **composition
-  settings**.
+- **Layers** - add, duplicate, remove, reorder, rename, parenting, in/out points, time
+  stretch, blending modes, 3D, track mattes, labels and switches; solids, nulls, text,
+  shapes, cameras, lights, footage and precomps.
+- **Every property After Effects exposes** - transforms, effect parameters, masks, shape
+  contents, text and text animators, camera and light options, time remap - with their
+  keyframes, interpolation, eases, spatial tangents and expressions.
+- **The whole project** - comps that are not open, new comps, folders, renames, precompose,
+  composition settings and markers.
 - **Cursors, selection and presence.**
+
+Not synced yet: layer styles, and effect controls that hold custom data (such as Curves).
+Solo, shy, lock and your selection stay local.
 
 Playheads are deliberately **not** synced - editors work at different points of the
 timeline on purpose.

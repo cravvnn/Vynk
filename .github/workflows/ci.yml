@@ -38,6 +38,11 @@ jobs:
           node tools/check-es3.mjs
           if ($LASTEXITCODE -ne 0) { exit 1 }
           node tools/check-es3.mjs tools/ae-headless/verify.jsx
+          Copy-Item panel/jsx/sync.jsx "$env:TEMP/sync.js" -Force
+          node --check "$env:TEMP/sync.js"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Copy-Item tools/ae-pair/lib.jsx "$env:TEMP/pairlib.js" -Force
+          node --check "$env:TEMP/pairlib.js"
 
       - name: Unit tests
         run: npm test

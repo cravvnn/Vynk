@@ -14,7 +14,7 @@ function makeClient(name, index) {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   };
   ws.on('open', () => {
-    send({ t: 'hello', proto: 1, room, name, aeVersion: 'bot-' + index });
+    send({ t: 'hello', proto: 2, room, name, aeVersion: 'bot-' + index });
   });
   ws.on('message', (raw) => {
     let m;

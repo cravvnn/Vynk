@@ -33,7 +33,7 @@ function client(name, roomCode = room) {
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
     const c = { ws, name, errors: [], welcome: null };
     let ready = false;
-    ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', proto: 1, room: roomCode, name, aeVersion: 'test' })));
+    ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', proto: 2, room: roomCode, name, aeVersion: 'test' })));
     ws.on('message', (raw) => {
       const m = JSON.parse(raw.toString());
       if (m.t === 'welcome') {

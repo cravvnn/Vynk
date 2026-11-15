@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export type AeVersion = string;
 
@@ -20,7 +20,27 @@ export interface OpTarget {
   layer?: string;
 }
 
+// Protocol 2 (sync engine v2). A layer is its attributes plus its property
+// tree; paths are matchName chains. Item ops put the item sid in target.comp.
+//   attr     one layer attribute            path = attribute, value
+//   prop     one property (value or keys)   path = property path, value = record
+//   gadd/grm/gmv  child of an indexed group (effect, mask, shape item) added/removed/moved
+//   add/remove/reorder  layers
+//   comp     one composition setting        path = field, value
+//   iadd/irm/iset  project items (comps, folders)
+//   batch    value.ops = EditOp[], applied atomically
+// The kinds after 'batch' are protocol 1 and only kept for the relay's claim code.
 export type OpKind =
+  | 'attr'
+  | 'prop'
+  | 'gadd'
+  | 'grm'
+  | 'gmv'
+  | 'comp'
+  | 'iadd'
+  | 'irm'
+  | 'iset'
+  | 'batch'
   | 'set'
   | 'add'
   | 'remove'

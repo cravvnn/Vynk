@@ -4,7 +4,7 @@ const [room = 'DEMO2026', name = 'Bot', ae = '25.0'] = process.argv.slice(2);
 const ws = new WebSocket(process.env.URL || 'ws://127.0.0.1:8787/ws');
 
 ws.on('open', () => {
-  ws.send(JSON.stringify({ t: 'hello', proto: 1, room, name, aeVersion: ae }));
+  ws.send(JSON.stringify({ t: 'hello', proto: 2, room, name, aeVersion: ae }));
   console.log(`[bot ${name}] connecting to room ${room} as AE ${ae}`);
 });
 

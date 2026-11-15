@@ -12,7 +12,7 @@ let lastCursorLog = 0;
 let cursorCount = 0;
 
 ws.on('open', () => {
-  ws.send(JSON.stringify({ t: 'hello', proto: 1, room, name, aeVersion: 'observer' }));
+  ws.send(JSON.stringify({ t: 'hello', proto: 2, room, name, aeVersion: 'observer' }));
   console.log(`[watch] joining ${room} as ${name}`);
 });
 

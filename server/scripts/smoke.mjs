@@ -62,12 +62,12 @@ function assert(cond, label) {
 
 const a = await makeClient('Alice');
 const b = await makeClient('Bob');
-a.send({ t: 'hello', proto: 1, room: ROOM, name: 'Alice', aeVersion: '25.0' });
+a.send({ t: 'hello', proto: 2, room: ROOM, name: 'Alice', aeVersion: '25.0' });
 const welcomeA = await a.wait((m) => m.t === 'welcome');
 assert(welcomeA.members.length === 0, 'first joiner sees empty room');
 assert(welcomeA.seq === 0, 'fresh room starts at seq 0');
 
-b.send({ t: 'hello', proto: 1, room: ROOM, name: 'Bob', aeVersion: '17.0' });
+b.send({ t: 'hello', proto: 2, room: ROOM, name: 'Bob', aeVersion: '17.0' });
 const welcomeB = await b.wait((m) => m.t === 'welcome');
 assert(welcomeB.members.length === 1 && welcomeB.members[0].name === 'Alice', 'second joiner sees Alice');
 await a.wait((m) => m.t === 'presence' && m.event === 'join' && m.member.name === 'Bob');
@@ -97,7 +97,7 @@ const err = await a.wait((m) => m.t === 'error' && m.code === 'locked');
 assert(Boolean(err), 'lock conflict rejected');
 
 const c = await makeClient('Carol');
-c.send({ t: 'hello', proto: 1, room: ROOM, name: 'Carol', aeVersion: '26.0' });
+c.send({ t: 'hello', proto: 2, room: ROOM, name: 'Carol', aeVersion: '26.0' });
 const welcomeC = await c.wait((m) => m.t === 'welcome');
 assert(welcomeC.ops.length === 1 && welcomeC.ops[0].op.opId === 'op-1', 'late joiner replays op log');
 

@@ -4,6 +4,64 @@ All notable changes to Vynk are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-11-14
+
+Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
+
+### Added
+
+- **Generic property-tree sync.** A layer is its attributes plus its whole property tree,
+  addressed by matchName paths, so everything After Effects exposes to scripts syncs without
+  per-feature code: all transform properties (3D, separated dimensions), every effect
+  parameter, masks, shape contents, text documents and animators, camera and light options,
+  material and geometry options, time remap, audio levels, layer and comp markers.
+- **More layer attributes.** Blending mode, 3D, label colour, stretch, track matte, quality,
+  guide/adjustment flags, collapse transformations, comments, cameras and lights as layers.
+- **Whole-project sync.** Edits in comps that are not open, new comps, folders, renames,
+  moving items between folders and precompose all sync. Previously only the active comp did.
+- **Two-instance convergence harness** (`npm run test:pair`): runs two real After Effects
+  versions against a private relay, makes scripted edits in one and compares a full
+  independent dump of both projects. 64 scenarios including a 100-layer stress comp.
+- `tools/test-sync.mjs`: unit tests for the new diff/adopt model.
+
+### Changed
+
+- **Convergence model.** The panel keeps a shadow of the shared state per comp. Remote ops
+  are applied and the project is re-read in the same After Effects call, and what the ops
+  touched is adopted as shared state. This replaces value-matching echo suppression with a
+  5 s TTL, which could both re-send remote edits and swallow local ones.
+- **Conflicts are last-writer-wins in relay order.** A client skips a remote edit to a value
+  it has an unacknowledged edit for. The 0.7.6 claim/reject/revert path is no longer used.
+- **One gesture is one atomic batch**, applied in one undo step on the receiving side.
+- **Sync no longer pauses when After Effects is not the foreground app.**
+- **Read cost is independent of comp size.** Every layer's attributes are read each cycle;
+  the full property tree only for selected layers, layers touched by incoming edits, and a
+  small rotating slice. The native companion's change signal triggers a one-off full read
+  when nothing selected explains a change.
+- Duplicated layers get their own identity (a duplicate used to share its original's id).
+- Solo, shy, lock and selection are deliberately local.
+
+### Removed
+
+- The v1 diff engine (`panel/src/diff.js`), its tests and fuzzer, per-surface polling
+  (effects/text/shapes), the structure circuit breaker and the divergence hold, which
+  stopped all structure sync after a single missed op.
+
+### Fixed
+
+- **Stale panel copies.** A panel reload re-ran the script in the same window while the
+  previous copy's timers kept firing, so several sync loops drove one project. Every timer
+  now checks it belongs to the newest copy.
+- Keyframes created by a teammate arrived with the wrong interpolation.
+- A new layer and an edit that referred to it (parenting) could arrive in the wrong order.
+- New text and shape layers arrived empty.
+
+### Known gaps
+
+- Layer styles: After Effects gives scripts no way to add one.
+- Effect parameters with custom data (for example Curves) cannot be read by scripts.
+- Footage import is not announced on its own; footage layers resolve media by path or name.
+
 ## [0.7.7] - 2026-10-29
 
 ### Fixed

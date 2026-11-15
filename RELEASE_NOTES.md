@@ -4,6 +4,31 @@ User-facing notes for GitHub releases. `tools/publish.mjs` pulls the section for
 current version and drops it into the release description. Keep it plain-language and in
 the `- **Title.** *Before:* … *After:* …` style. Technical detail lives in CHANGELOG.md.
 
+## [0.8.0] - 2026-11-14
+
+Everyone in a room must update: 0.8 and 0.7 panels cannot share a session.
+
+- **Far more of the project syncs.** *Before:* position, scale, rotation, opacity, anchor,
+  effects, masks, shapes and text. *After:* every property After Effects exposes, plus
+  blending modes, 3D layers, cameras, lights, label colours, time stretch, time remap,
+  track mattes and markers.
+- **The whole project syncs, not just the open comp.** *Before:* an edit in a comp you did
+  not have open was never sent. *After:* background comps, new comps, folders, renames and
+  precompose all reach your team.
+- **Sessions stay in sync instead of drifting.** *Before:* one missed edit could freeze
+  layer syncing for the rest of the session, and edits could bounce or get lost. *After:*
+  each client tracks the shared state exactly and corrects itself; when two people change
+  the same value, the later edit wins for everyone.
+- **A teammate's change is one undo step.** *Before:* a single drag could land as several
+  separate changes. *After:* each gesture arrives whole.
+- **Sync keeps running when you switch apps.** *Before:* incoming edits waited until After
+  Effects was the active window again. *After:* they apply in the background.
+- **Duplicating a layer works.** *Before:* a duplicate could be confused with its original.
+  *After:* it syncs as its own layer.
+- **Big comps stay responsive.** The panel reads in depth only what you are working on.
+
+Not yet synced: layer styles, and effect controls that hold custom data such as Curves.
+
 ## [0.7.7] - 2026-10-29
 
 - **Conflicts always end on a shared value.** *Before:* in a narrow case (a brand-new

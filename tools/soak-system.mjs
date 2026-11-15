@@ -52,7 +52,7 @@ function makeClient(index) {
   let token = null;
   const send = (o) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); };
 
-  ws.on('open', () => send({ t: 'hello', proto: 1, room, name: 'soak' + index, aeVersion: '25.4 soak' }));
+  ws.on('open', () => send({ t: 'hello', proto: 2, room, name: 'soak' + index, aeVersion: '25.4 soak' }));
   ws.on('message', (raw) => {
     let m;
     try { m = JSON.parse(raw.toString()); } catch { stats.errors.push('bad json'); return; }

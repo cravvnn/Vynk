@@ -11,7 +11,7 @@ const fail = (m) => { console.error('FAIL:', m); process.exit(1); };
 const timer = setTimeout(() => fail('timeout'), 20000);
 
 ws.on('open', () => {
-  ws.send(JSON.stringify({ t: 'hello', proto: 1, room, name: 'probe', aeVersion: 'deploy' }));
+  ws.send(JSON.stringify({ t: 'hello', proto: 2, room, name: 'probe', aeVersion: 'deploy' }));
 });
 
 ws.on('message', async (raw) => {

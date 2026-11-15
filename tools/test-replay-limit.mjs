@@ -39,7 +39,7 @@ function getText(p) {
 function join(room) {
   return new Promise((resolve) => {
     const w = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
-    w.on('open', () => w.send(JSON.stringify({ t: 'hello', proto: 1, room, name: 'probe', aeVersion: 'test' })));
+    w.on('open', () => w.send(JSON.stringify({ t: 'hello', proto: 2, room, name: 'probe', aeVersion: 'test' })));
     w.on('message', (raw) => {
       const m = JSON.parse(raw.toString());
       if (m.t === 'welcome') resolve({ ws: w, welcome: m });

@@ -1,54 +1,59 @@
 (function () {
   'use strict';
 
-  var PROTO = 1;
+  var PROTO = 2;
   var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev');
   var CURSOR_FLUSH_MS = 33;
   var POLL_FAST_MS = 200;
-  var POLL_SLOW_MS = 500;
   var POLL_BURST_MS = 2500;
-  var FX_POLL_MS = 1200;
-  var FX_CHUNKS = 4;
-  var TEXT_POLL_MS = 600;
-  var SHAPE_POLL_MS = 2500;
-  var STRUCTURE_LIMIT = 20;
-  var STRUCTURE_WINDOW_MS = 4000;
-  var STRUCTURE_COOLDOWN_MS = 15000;
-  var TEXT_DEBOUNCE_MS = 500;
-  var LOCAL_TEXT_HOLD_MS = 3000;
-  var MAX_OPS_PER_POLL = 60;
   var CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   var RECONNECT_DELAY_MS = 3000;
   var PING_INTERVAL_MS = 5000;
   var MAX_LOG_LINES = 200;
   var MAX_LOG_BUFFER = 80;
-  var MAX_REMOTE_QUEUE = 200;
   var MAX_OUTBOX = 500;
-  var WATCHDOG_POLL_MS = 5000;
-  var WATCHDOG_STAMP_MS = 4000;
-  var FOCUS_QUEUE_DELAY_MS = 1500;
-// Remote edits to a target you are actively dragging wait this long after your
-// last local op, so a simultaneous drag cannot rubber-band mid-gesture.
-var GESTURE_HOLD_MS = 700;
-  var MAX_COMP_STATES = 12;
-  var BACKPRESSURE_LOW = 50000;
-  var BACKPRESSURE_MEDIUM = 200000;
-  var BACKPRESSURE_HIGH = 500000;
-  var BP_SLOW_POLL_MS = 500;
-  var BP_MEDIUM_POLL_MS = 1000;
-  var BP_HIGH_POLL_MS = 2000;
   var AEGP_PORT = 8990;
   var AEGP_RECONNECT_MS = 3000;
-  var NATIVE_IDLE_POLL_MS = 1500;
-  var NATIVE_FX_POLL_MS = 2500;
-  var NATIVE_TEXT_POLL_MS = 2000;
-  var NATIVE_SHAPE_POLL_MS = 4000;
+  var NATIVE_IDLE_POLL_MS = 500;
 
   function $(id) { return document.getElementById(id); }
 
-  var CollabDiff = window.CollabDiff || null;
-  var echo = CollabDiff ? CollabDiff.createEcho() : null;
+  // A panel reload re-runs this script in the same window while the previous
+  // copy's timers keep firing. Every timer checks that it still belongs to the
+  // newest copy, so an old one goes quiet instead of syncing a second time.
+  var LOAD_ID = String(Date.now()) + Math.random();
+  window.__vynkLoad = LOAD_ID;
 
+  function stale() {
+    return window.__vynkLoad !== LOAD_ID;
+  }
+
+  function later(fn, ms) {
+    return setTimeout(function () { if (!stale()) fn(); }, ms);
+  }
+
+  function every(fn, ms) {
+    var id = setInterval(function () {
+      if (stale()) {
+        clearInterval(id);
+        retire();
+        return;
+      }
+      fn();
+    }, ms);
+    return id;
+  }
+
+  function retire() {
+    if (state.retired) return;
+    state.retired = true;
+    wantConnected = false;
+    try { if (state.ws) state.ws.close(); } catch (e) {}
+    try { if (state.aegp.sock) state.aegp.sock.destroy(); } catch (e2) {}
+  }
+
+
+  var Sync = window.VynkSync || null;
   var inAE = typeof window.__adobe_cep__ !== 'undefined';
   var cs = null;
   var hostVersion = '';
@@ -74,37 +79,15 @@ var GESTURE_HOLD_MS = 700;
     compId: null,
     compName: null,
     selection: [],
-    lastComp: null,
-    polling: false,
-    pollTimer: null,
     pollScheduledDelay: 0,
     lastChangeAt: 0,
     lastTxLogAt: 0,
     lastRxLogAt: 0,
-    keysOmittedWarned: false,
     missingPolls: 0,
-    pollStartedAt: 0,
     pollCount: 0,
     lastPollResult: '',
-    stamping: false,
-    stampStartedAt: 0,
-    unsupportedAddWarned: false,
-    missingFx: {},
-    effectsTruncatedWarned: false,
-    compStates: {},
-    fxStates: {},
-    textStates: {},
-    shapeStates: {},
-    shapeWarned: false,
-    structureTimes: [],
-    structurePausedUntil: 0,
-    structurePauseLogged: false,
     focusKnown: false,
     aeFocused: true,
-    remoteQueue: [],
-    textDebounce: {},
-    lastLocalTextAt: 0,
-    queueFlushTimer: null,
     helper: { sock: null, connected: false, node: typeof require === 'function' },
     aegp: { sock: null, connected: false },
     nativeMode: false,
@@ -116,9 +99,6 @@ var GESTURE_HOLD_MS = 700;
     projectHash: '',
     projectName: '',
     projectPath: '',
-    compHash: '',
-    divergedWith: {},
-    divergenceLogged: false,
     roomToken: '',
     baseInfo: null,
     seenOps: {},
@@ -128,11 +108,7 @@ var GESTURE_HOLD_MS = 700;
     outboxKey: '',
     pollMs: 0,
     applyFails: 0,
-    claimLosses: 0,
     reconnects: 0,
-    localEditAt: {},
-    lastSentOp: {},
-    desyncs: 0,
     lastRxAt: 0,
     catchupState: 'none',
     pendingReplay: null,
@@ -143,7 +119,33 @@ var GESTURE_HOLD_MS = 700;
     fromSeq: 0,
     fetchingHistory: false,
     historyFetchTried: false,
-    catchupLogged: false
+    catchupLogged: false,
+    shadows: {},
+    inbox: [],
+    pending: {},
+    force: {},
+    stampJob: null,
+    shadowItems: null,
+    deepQueue: {},
+    fullNext: {},
+    sweepLayer: 0,
+    sweepComp: null,
+    rev: -1,
+    sweeping: true,
+    chase: false,
+    escalateAt: 0,
+    escalateGapMs: 3000,
+    readQueue: [],
+    compSids: [],
+    sweepIdx: 0,
+    lastActiveSid: null,
+    cycleBusy: false,
+    cycleStartedAt: 0,
+    cycleTimer: null,
+    cycleDueAt: 0,
+    cycleMs: 0,
+    compSid: null,
+    lwwSkips: 0
   };
 
   var logBuffer = [];
@@ -253,6 +255,7 @@ var GESTURE_HOLD_MS = 700;
   }
 
   function saveSettings() {
+    if (state.harness) return;
     try {
       localStorage.setItem('collab.settings', JSON.stringify({
         server: $('serverInput').value.trim(),
@@ -264,10 +267,7 @@ var GESTURE_HOLD_MS = 700;
 
   function send(msg) {
     if (state.ws && state.ws.readyState === 1) {
-      if (msg.t === 'op') {
-        state.opsSent++;
-        noteLocalGesture(msg.op);
-      }
+      if (msg.t === 'op') state.opsSent += (msg.op.kind === 'batch' ? msg.op.value.ops.length : 1);
       state.ws.send(JSON.stringify(msg));
       return;
     }
@@ -363,22 +363,23 @@ var GESTURE_HOLD_MS = 700;
         sent = true;
         send({ t: 'hello', proto: PROTO, room: room, name: name, aeVersion: (hostVersion || 'unknown') + ' ' + PANEL_BUILD, build: PANEL_BUILD, project: state.projectName || '' });
       };
-      var timer = setTimeout(sendHello, 600);
+      var timer = later(sendHello, 600);
       fetchHostInfo(function () { clearTimeout(timer); sendHello(); });
     };
     ws.onmessage = function (ev) {
+      if (stale()) return;
       var msg;
       try { msg = JSON.parse(ev.data); } catch (e) { return; }
       onMessage(msg);
     };
     ws.onclose = function () {
+      if (stale()) return;
       if (state.connected) log('disconnected');
       state.connected = false;
       state.selfId = null;
       state.members = {};
       state.order = [];
-      state.remoteQueue = [];
-      state.textDebounce = {};
+      state.pending = {};
       state.roomToken = '';
       state.baseInfo = null;
       state.baseOpened = false;
@@ -392,7 +393,7 @@ var GESTURE_HOLD_MS = 700;
         state.reconnects = (state.reconnects || 0) + 1;
         var backoff = Math.min(RECONNECT_DELAY_MS * Math.min(retryCount, 5), 15000);
         log('reconnecting in ' + Math.round(backoff / 1000) + 's (attempt ' + retryCount + ')');
-        setTimeout(function () { if (wantConnected) connect(); }, backoff);
+        later(function () { if (wantConnected) connect(); }, backoff);
       }
     };
     ws.onerror = function () {
@@ -412,6 +413,11 @@ var GESTURE_HOLD_MS = 700;
     switch (msg.t) {
       case 'welcome': {
         state.connected = true;
+        if (!state.everConnected) {
+          // Sync starts from what the project holds at the moment of joining.
+          state.shadows = {};
+          state.shadowItems = null;
+        }
         state.everConnected = true;
         state.selfId = msg.selfId;
         state.room = msg.room;
@@ -430,7 +436,6 @@ var GESTURE_HOLD_MS = 700;
           checkMemberBuild(m);
           checkMemberVersion(m);
           checkMemberProject(m);
-          checkCompDivergence(m);
         }
         setStatus('on', 'room ' + msg.room);
         log('joined room ' + msg.room + ' with ' + msg.members.length + ' member(s), ' + msg.ops.length + ' op(s) in log');
@@ -453,7 +458,7 @@ var GESTURE_HOLD_MS = 700;
         }
         flushLogBuffer();
         flushOutbox();
-        if (state.compId) send({ t: 'selection', compId: state.compId, layers: state.selection, hash: state.compHash });
+        if (state.compId) send({ t: 'selection', compId: state.compId, layers: state.selection });
         renderMembers();
         renderBase();
         pushPeersToNative();
@@ -475,7 +480,6 @@ var GESTURE_HOLD_MS = 700;
           checkMemberBuild(member);
           checkMemberVersion(member);
           checkMemberProject(member);
-          checkCompDivergence(member);
         } else {
           delete state.members[member.id];
           var idx = state.order.indexOf(member.id);
@@ -507,31 +511,12 @@ var GESTURE_HOLD_MS = 700;
         if (sel) {
           sel.selection = msg.layers;
           if (msg.compId) sel.compId = msg.compId;
-          sel.compHash = msg.hash || '';
-          checkCompDivergence(sel);
         }
         renderMembers();
         return;
       }
       case 'op': {
-        if (msg.author === state.selfId) return;
-        if (msg.op && msg.op.opId) {
-          if (state.seenOps[msg.op.opId]) return;
-          state.seenOps[msg.op.opId] = 1;
-          if (++state.seenOpCount > 1000) {
-            state.seenOps = {};
-            state.seenOpCount = 0;
-          }
-        }
-        state.opsReceived++;
-        maybeLogRx(msg.op.kind, msg.op.path);
-        if (echo) {
-          var opLayer = msg.op.target ? msg.op.target.layer || '' : '';
-          var echoValue = msg.op.kind === 'set' && msg.op.path !== 'textDoc' ? msg.op.value : undefined;
-          var echoTime = (msg.op.kind === 'addKey' || msg.op.kind === 'setKey' || msg.op.kind === 'removeKey') ? msg.op.time : undefined;
-          echo.mark(opLayer, msg.op.path || '', echoValue, echoTime);
-        }
-        if (inAE) applyRemoteOp(msg.op);
+        onRemoteOp(msg);
         return;
       }
       case 'lock': {
@@ -539,22 +524,6 @@ var GESTURE_HOLD_MS = 700;
         return;
       }
       case 'error': {
-        if (msg.code === 'locked' && msg.target) {
-          state.claimLosses = (state.claimLosses || 0) + 1;
-          var claimOwner = (state.members[msg.owner] && state.members[msg.owner].name) || msg.owner || 'someone';
-          var revert = msg.op && msg.op.op ? msg.op.op : inverseOf(state.lastSentOp[msg.target]);
-          if (revert) {
-            logThrottled('claim:' + msg.target, 'edit held: ' + claimOwner + ' is changing this - your value was reverted', 4000);
-            applyRemoteOp(revert);
-          } else {
-            state.desyncs = (state.desyncs || 0) + 1;
-            // Nothing to revert to. Adopt local state as the new baseline so the
-            // same op is not re-emitted forever.
-            if (state.compId) invalidateCompBaselines(state.compId);
-            logThrottled('claim:' + msg.target, 'edit held: ' + claimOwner + ' is changing this - your value was not shared (re-open the project if it looks out of sync)', 4000);
-          }
-          return;
-        }
         log('server error: ' + msg.code + ' ' + msg.message);
         return;
       }
@@ -568,190 +537,10 @@ var GESTURE_HOLD_MS = 700;
     return typeof id === 'string' ? id.slice(0, 4) : '?';
   }
 
-  function textSyncEnabled() {
-    return window.VYNK_TEXT_SYNC === true;
-  }
-
-  function scheduleTextOp(op) {
-    var key = (op.target ? op.target.layer : '') + '|textDoc';
-    var existing = state.textDebounce[key];
-    if (existing && existing.timer) clearTimeout(existing.timer);
-    var timer = setTimeout(function () { flushTextOp(key); }, TEXT_DEBOUNCE_MS);
-    state.textDebounce[key] = { op: op, timer: timer };
-  }
-
-  function flushTextOp(key) {
-    var entry = state.textDebounce[key];
-    if (!entry) return;
-    delete state.textDebounce[key];
-    state.lastLocalTextAt = Date.now();
-    if (!state.connected) return;
-    send({ t: 'op', op: entry.op });
-    txLog([entry.op]);
-  }
-
-  function debounceTextOps(ops) {
-    if (!textSyncEnabled()) {
-      var nonText = [];
-      for (var i = 0; i < ops.length; i++) {
-        if (ops[i].kind === 'set' && ops[i].path === 'textDoc') continue;
-        nonText.push(ops[i]);
-      }
-      return nonText;
-    }
-    var out = [];
-    for (var j = 0; j < ops.length; j++) {
-      if (ops[j].kind === 'set' && ops[j].path === 'textDoc') {
-        scheduleTextOp(ops[j]);
-        continue;
-      }
-      out.push(ops[j]);
-    }
-    return out;
-  }
-
-  function scheduleQueueFlush() {
-    if (state.queueFlushTimer) return;
-    state.queueFlushTimer = setTimeout(function () {
-      state.queueFlushTimer = null;
-      if (state.remoteQueue.length === 0) return;
-      if (!aeIsFocused()) return;
-      if (Date.now() - state.lastLocalTextAt < LOCAL_TEXT_HOLD_MS) {
-        scheduleQueueFlush();
-        return;
-      }
-      // Do not yank a value out from under a live drag: wait for the gesture to
-      // settle, then apply the newest remote value per target.
-      var now = Date.now();
-      for (var i = 0; i < state.remoteQueue.length; i++) {
-        var k = opKey(state.remoteQueue[i]);
-        if (k && now - (state.localEditAt[k] || 0) < GESTURE_HOLD_MS) {
-          scheduleQueueFlush();
-          return;
-        }
-      }
-      flushRemoteQueue();
-    }, FOCUS_QUEUE_DELAY_MS);
-  }
-
-  // Per-target key shared by the queue and the gesture hold. Structure/effect
-  // ops return '' and are never held.
-  function opKey(op) {
-    if (!op || !op.target) return '';
-    if (op.kind === 'set' || op.kind === 'setExpr') return op.target.layer + '|' + (op.path || '');
-    if (op.kind === 'addKey' || op.kind === 'setKey' || op.kind === 'removeKey') {
-      return op.target.layer + '|' + (op.path || '') + '|' + (op.time !== undefined ? Math.round(op.time * 10000) : '');
-    }
-    return '';
-  }
-
-  function noteLocalGesture(op) {
-    var k = opKey(op);
-    if (!k) return;
-    state.localEditAt[k] = Date.now();
-    state.lastSentOp[k] = op;
-  }
-
-  // Best-effort local undo when the relay has no winning op to send back. Only
-  // an added keyframe has an unambiguous inverse.
-  function inverseOf(op) {
-    if (!op) return null;
-    if (op.kind === 'addKey') {
-      return { opId: 'undo-' + op.opId, kind: 'removeKey', target: op.target, path: op.path, time: op.time };
-    }
-    return null;
-  }
-
-  function aeIsFocused() {
-    if (!state.focusKnown) return true;
-    return state.aeFocused;
-  }
-
-  function queueRemoteOp(op) {
-    if (state.remoteQueue.length === 0) log('AE not focused - holding remote edits until focus returns');
-    if (state.remoteQueue.length > MAX_REMOTE_QUEUE) state.remoteQueue.shift();
-    state.remoteQueue.push(op);
-  }
-
-  function flushRemoteQueue() {
-    if (state.remoteQueue.length === 0) return;
-    var queue = state.remoteQueue;
-    state.remoteQueue = [];
-    var lastIndex = {};
-    var i;
-    for (i = 0; i < queue.length; i++) {
-      var op = queue[i];
-      if (!op.target) continue;
-      var key;
-      if (op.kind === 'set' || op.kind === 'setExpr') {
-        key = op.target.layer + '|' + (op.path || '');
-      } else if (op.kind === 'addKey' || op.kind === 'setKey' || op.kind === 'removeKey') {
-        key = op.target.layer + '|' + (op.path || '') + '|' + (op.time !== undefined ? Math.round(op.time * 10000) : '');
-      } else {
-        continue;
-      }
-      lastIndex[key] = i;
-    }
-    var applied = 0;
-    for (i = 0; i < queue.length; i++) {
-      var op2 = queue[i];
-      if (!op2.target) {
-        applyRemoteOp(op2);
-        applied++;
-        continue;
-      }
-      var key2;
-      if (op2.kind === 'set' || op2.kind === 'setExpr') {
-        key2 = op2.target.layer + '|' + (op2.path || '');
-      } else if (op2.kind === 'addKey' || op2.kind === 'setKey' || op2.kind === 'removeKey') {
-        key2 = op2.target.layer + '|' + (op2.path || '') + '|' + (op2.time !== undefined ? Math.round(op2.time * 10000) : '');
-      } else {
-        applyRemoteOp(op2);
-        applied++;
-        continue;
-      }
-      if (lastIndex[key2] !== i) continue;
-      applyRemoteOp(op2);
-      applied++;
-    }
-    log('applied ' + applied + ' queued op(s) after focus returned');
-  }
-
-  function effectMatchNameOf(op) {
-    if (!op) return '';
-    if (op.kind === 'addEffect' && op.value && op.value.matchName) return String(op.value.matchName);
-    var path = op.path || '';
-    if (path.indexOf('fx:') !== 0) return '';
-    var rest = path.substring(3);
-    var hash = rest.indexOf('#');
-    var slash = rest.indexOf('/');
-    var end = rest.length;
-    if (hash >= 0 && hash < end) end = hash;
-    if (slash >= 0 && slash < end) end = slash;
-    return rest.substring(0, end);
-  }
-
-  function invalidateCompBaselines(compId) {
-    if (!compId) return;
-    delete state.compStates[compId];
-    delete state.fxStates[compId];
-    delete state.textStates[compId];
-    delete state.shapeStates[compId];
-  }
-
   function localProjectOnBase() {
     if (!state.baseInfo || !state.baseInfo.name) return false;
     if (state.baseOpened) return true;
     return state.projectName === state.baseInfo.name;
-  }
-
-  function hasDivergenceForComp(compId) {
-    for (var id in state.members) {
-      if (id === state.selfId) continue;
-      var m = state.members[id];
-      if (m.compId && compId && m.compId === compId && state.divergedWith[id]) return true;
-    }
-    return false;
   }
 
   function tryApplyReplay() {
@@ -759,17 +548,8 @@ var GESTURE_HOLD_MS = 700;
     if (state.pendingReplay.length === 0 && !state.replayTruncated) return;
     if (state.replayApplied) return;
     if (!inAE || !cs) return;
-    if (state.stamping || state.polling) return;
     if (state.replayTruncated) {
       state.catchupState = 'held-truncated';
-      return;
-    }
-    if (hasDivergence()) {
-      state.catchupState = 'held-diverged';
-      if (!state.catchupLogged) {
-        state.catchupLogged = true;
-        log('catch-up held: your project structure differs from a teammate - open the same project file');
-      }
       return;
     }
     if (!localProjectOnBase()) {
@@ -798,68 +578,12 @@ var GESTURE_HOLD_MS = 700;
       if (!op || !op.opId) continue;
       if (state.seenOps[op.opId]) continue;
       state.seenOps[op.opId] = 1;
-      if (op.target && op.target.comp) invalidateCompBaselines(op.target.comp);
-      if (op.kind === 'set' && op.path === 'textDoc' && !textSyncEnabled()) continue;
-      applied++;
-      cs.evalScript('collab.applyOp(' + JSON.stringify(JSON.stringify(op)) + ')', function (res) {
-        if (res && res.indexOf('"ok":false') >= 0) {
-          failed++;
-          state.applyFails = (state.applyFails || 0) + 1;
-          if (failed <= 3) log('catch-up apply failed: ' + String(res).slice(0, 80));
-        }
-      });
+      if (!Sync) continue;
+      applied += acceptRemote(op);
     }
+    kickCycle(0);
     state.lastChangeAt = Date.now();
     log('catch-up: ' + applied + ' edit(s) applied');
-  }
-
-  function applyRemoteOp(op) {
-    if (!cs || !inAE) return;
-    var opComp = op.target ? op.target.comp : null;
-    if (opComp && state.compId && opComp !== state.compId) {
-      invalidateCompBaselines(opComp);
-    }
-    var fxName = effectMatchNameOf(op);
-    if (fxName && state.missingFx[fxName]) return;
-    if (op.kind === 'set' && op.path === 'textDoc') {
-      if (!textSyncEnabled()) return;
-      if (Date.now() - state.lastLocalTextAt < LOCAL_TEXT_HOLD_MS) {
-        queueRemoteOp(op);
-        scheduleQueueFlush();
-        return;
-      }
-    }
-    if (!aeIsFocused()) {
-      queueRemoteOp(op);
-      return;
-    }
-    var gestureKey = opKey(op);
-    if (gestureKey && Date.now() - (state.localEditAt[gestureKey] || 0) < GESTURE_HOLD_MS) {
-      queueRemoteOp(op);
-      scheduleQueueFlush();
-      return;
-    }
-    try {
-      cs.evalScript('collab.applyOp(' + JSON.stringify(JSON.stringify(op)) + ')', function (res) {
-        if (res && res.indexOf('"ok":false') >= 0) {
-          if (res.indexOf('effect unavailable') >= 0) {
-            if (fxName && !state.missingFx[fxName]) {
-              state.missingFx[fxName] = true;
-              log('effect not installed here - skipping: ' + fxName);
-            }
-          } else {
-            state.applyFails = (state.applyFails || 0) + 1;
-            logThrottled('applyfail:' + String(res).slice(0, 60), 'apply failed: ' + res, 3000);
-          }
-        } else if (!res && (state.applyLogCount || 0) < 5) {
-          state.applyLogCount = (state.applyLogCount || 0) + 1;
-          log('apply returned empty (typeof=' + (typeof res) + ')');
-        } else if (res && (state.applyOkCount || 0) < 10) {
-          state.applyOkCount = (state.applyOkCount || 0) + 1;
-          log('apply ok: ' + String(res).slice(0, 80));
-        }
-      });
-    } catch (e) {}
   }
 
   function compLabel(compId) {
@@ -960,9 +684,7 @@ var GESTURE_HOLD_MS = 700;
       'tx ' + state.opsSent,
       'rx ' + state.opsReceived,
       'fail ' + (state.applyFails || 0),
-      'held ' + (state.claimLosses || 0),
-      'desync ' + (state.desyncs || 0),
-      'q ' + state.remoteQueue.length,
+      'q ' + state.inbox.length,
       're ' + (state.reconnects || 0),
       'stop ' + state.pollScheduledDelay + 'ms',
       'age ' + age + 's'
@@ -980,9 +702,9 @@ var GESTURE_HOLD_MS = 700;
       opsSent: state.opsSent,
       opsReceived: state.opsReceived,
       applyFails: state.applyFails,
-      claimLosses: state.claimLosses,
-      desyncs: state.desyncs,
-      queued: state.remoteQueue.length,
+      cycleMs: state.cycleMs,
+      superseded: state.lwwSkips,
+      queued: state.inbox.length,
       outbox: state.outbox.length,
       reconnects: state.reconnects,
       catchup: state.catchupState,
@@ -1014,7 +736,7 @@ var GESTURE_HOLD_MS = 700;
       res.on('end', function () { done(null, res.statusCode, Buffer.concat(chunks)); });
     });
     req.on('error', function (e3) { done(e3); });
-    req.setTimeout(120000, function () { req.destroy(new Error('upload timed out')); });
+    req.later(120000, function () { req.destroy(new Error('upload timed out')); });
     var rs = fs.createReadStream(srcPath);
     rs.on('error', function (e4) { done(e4); });
     rs.pipe(req);
@@ -1033,7 +755,7 @@ var GESTURE_HOLD_MS = 700;
       res.on('end', function () { done(null, res.statusCode, Buffer.concat(chunks).toString('utf8')); });
     });
     req.on('error', function (e2) { done(e2); });
-    req.setTimeout(60000, function () { req.destroy(new Error('history request timed out')); });
+    req.later(60000, function () { req.destroy(new Error('history request timed out')); });
     req.end();
   }
 
@@ -1102,7 +824,7 @@ var GESTURE_HOLD_MS = 700;
       ws.on('error', function (e) { done(e); });
     });
     req.on('error', function (e2) { done(e2); });
-    req.setTimeout(120000, function () { req.destroy(new Error('download timed out')); });
+    req.later(120000, function () { req.destroy(new Error('download timed out')); });
     req.end();
   }
 
@@ -1241,20 +963,16 @@ var GESTURE_HOLD_MS = 700;
     try { sock.write('PEERS\t' + parts.join(';') + '\n'); } catch (e) {}
   }
 
-  function idleIntervalMs(normalMs, nativeMs) {
-    if (state.nativeMode && (Date.now() - state.lastChangeAt) >= POLL_BURST_MS) return nativeMs;
-    return normalMs;
-  }
-
   function onAegpLine(line) {
     // The native companion tells us the project was touched (CHANGED) or the
     // active comp / selection changed (COMP/SEL). Any of those is the cue to do
     // one evalScript snapshot instead of polling constantly. We don't take the
     // native values directly (layer-id format differs pre-AE22), we just use the
     // signal to poll now and let the existing diff produce the ops.
+    if (stale()) return;
     if (line.indexOf('CHANGED') === 0 || line.indexOf('SEL\t') === 0 || line.indexOf('COMP\t') === 0) {
       state.lastChangeAt = Date.now();
-      nudgeAePoll();
+      kickCycle(40);
       return;
     }
     if (line.indexOf('CURSOR\t') === 0) {
@@ -1269,7 +987,6 @@ var GESTURE_HOLD_MS = 700;
     }
     if (line.indexOf('FOCUS\t') === 0) {
       var nowFocused = line.charAt(6) === '1';
-      var wasFocused = aeIsFocused();
       state.focusKnown = true;
       state.aeFocused = nowFocused;
       if (!nowFocused && state.myCursor.known) {
@@ -1277,21 +994,7 @@ var GESTURE_HOLD_MS = 700;
       } else if (nowFocused && state.myCursor.known) {
         state.pendingCursor = { x: state.myCursor.x, y: state.myCursor.y };
       }
-      if (nowFocused && !wasFocused) flushRemoteQueue();
       return;
-    }
-  }
-
-  // If we are sitting on a slow (idle) poll timer and a native change arrives,
-  // pull the next snapshot forward. Once the loop is already fast, further
-  // CHANGEDs just keep lastChangeAt fresh (no timer churn).
-  function nudgeAePoll() {
-    if (!inAE || !cs) return;
-    if (state.polling) return;
-    if (state.pollTimer && state.pollScheduledDelay > POLL_FAST_MS) {
-      clearTimeout(state.pollTimer);
-      state.pollTimer = null;
-      scheduleAePoll(POLL_FAST_MS);
     }
   }
 
@@ -1314,7 +1017,7 @@ var GESTURE_HOLD_MS = 700;
     function connect() {
       var sock;
       try { sock = net.connect(aegpBridgePort(), '127.0.0.1'); } catch (e) {
-        setTimeout(connect, AEGP_RECONNECT_MS);
+        later(connect, AEGP_RECONNECT_MS);
         return;
       }
       state.aegp.sock = sock;
@@ -1338,12 +1041,13 @@ var GESTURE_HOLD_MS = 700;
         }
       });
       sock.on('close', function () {
+        if (stale()) return;
         if (state.nativeMode) log('native AEGP bridge lost - full polling resumes');
         state.aegp.connected = false;
         state.nativeMode = false;
         state.aegp.sock = null;
         setHelperText();
-        setTimeout(connect, AEGP_RECONNECT_MS);
+        later(connect, AEGP_RECONNECT_MS);
       });
       sock.on('error', function () {});
     }
@@ -1404,8 +1108,8 @@ var GESTURE_HOLD_MS = 700;
     }
     state.pollGeneration = (state.pollGeneration || 0) + 1;
     $('hostText').textContent = 'AE ' + hostVersion;
-    log('panel ' + PANEL_BUILD + ' starting (AE ' + hostVersion + ') text=' + (textSyncEnabled() ? 'on' : 'off'));
-    if (!CollabDiff) log('diff module missing - property sync disabled');
+    log('panel ' + PANEL_BUILD + ' starting (AE ' + hostVersion + ')');
+    if (!Sync) log('sync module missing - edits will not sync');
     try {
       var extPath = cs.getSystemPath(window.SystemPath.EXTENSION);
       if (extPath) {
@@ -1415,475 +1119,31 @@ var GESTURE_HOLD_MS = 700;
           '(function(){try{$.evalFile(' + JSON.stringify(jsxPath) + ');return "ok, collab=" + (typeof collab) + ", polyfill=" + ((typeof collab === "object") ? collab.jsonPolyfilled : "n/a");}catch(e){return "ERROR " + e.toString();}})()',
           function (res) { log('hostscript load: ' + res); }
         );
+        var syncPath = String(extPath).replace(/\\/g, '/') + '/jsx/sync.jsx';
+        cs.evalScript(
+          '(function(){try{return String($.evalFile(' + JSON.stringify(syncPath) + '));}catch(e){return "ERROR " + e.toString() + " @" + e.line;}})()',
+          function (res) { log('sync engine load: ' + res); kickCycle(0); }
+        );
       } else {
         log('extension path unavailable - relying on manifest ScriptPath');
       }
     } catch (e) {
       log('hostscript load error: ' + e.message);
     }
-    setTimeout(function () {
+    later(function () {
       cs.evalScript('typeof collab', function (res) {
         log('hostscript status: ' + res);
       });
     }, 2500);
-    setInterval(function () {
+    every(function () {
       if (state.compId) return;
       log('diag: no comp (polls=' + state.pollCount + ', missing=' + state.missingPolls + ', last=' + (state.lastPollResult || 'none') + ')');
     }, 30000);
     fetchHostInfo(function (ok) {
       if (ok) log('project: ' + (state.projectName || '(unsaved)'));
     });
-    setInterval(function () { fetchHostInfo(null); }, 10000);
-    scheduleAePoll(POLL_FAST_MS);
-    scheduleFxPoll(idleIntervalMs(FX_POLL_MS, NATIVE_FX_POLL_MS));
-    scheduleTextPoll(idleIntervalMs(TEXT_POLL_MS, NATIVE_TEXT_POLL_MS));
-    scheduleShapePoll(idleIntervalMs(SHAPE_POLL_MS, NATIVE_SHAPE_POLL_MS));
-  }
-
-  function wsBackpressure() {
-    if (!state.ws || state.ws.readyState !== 1) return 0;
-    var buf = state.ws.bufferedAmount || 0;
-    if (buf > BACKPRESSURE_HIGH) return 3;
-    if (buf > BACKPRESSURE_MEDIUM) return 2;
-    if (buf > BACKPRESSURE_LOW) return 1;
-    return 0;
-  }
-
-  function scheduleAePoll(delay) {
-    if (!inAE || !cs) return;
-    var gen = state.pollGeneration;
-    var bp = wsBackpressure();
-    var eff = delay;
-    if (bp === 3) eff = BP_HIGH_POLL_MS;
-    else if (bp === 2) eff = Math.max(delay, BP_MEDIUM_POLL_MS);
-    else if (bp === 1) eff = Math.max(delay, BP_SLOW_POLL_MS);
-    state.pollScheduledDelay = eff;
-    state.pollTimer = setTimeout(function () { if (state.pollGeneration === gen) pollAe(); }, eff);
-  }
-
-  function pollAe() {
-    if (state.stamping) {
-      if (Date.now() - state.stampStartedAt > WATCHDOG_STAMP_MS) {
-        state.stamping = false;
-        log('add: stamp watchdog fired');
-      } else {
-        scheduleAePoll(POLL_FAST_MS);
-        return;
-      }
-    }
-    if (!aeIsFocused()) {
-      scheduleAePoll(2000);
-      return;
-    }
-    if (state.polling) {
-      if (Date.now() - (state.pollStartedAt || 0) > WATCHDOG_POLL_MS) {
-        state.polling = false;
-        log('poll watchdog: no evalScript callback for ' + WATCHDOG_POLL_MS / 1000 + 's, recovering');
-      } else {
-        scheduleAePoll(POLL_FAST_MS);
-        return;
-      }
-    }
-    state.polling = true;
-    state.pollStartedAt = Date.now();
-    try {
-      cs.evalScript(
-        '(function(){try{' +
-          'if(typeof collab==="undefined")return "jsx-missing";' +
-          'if(typeof collab.getActiveCompState!=="function")return "fn-missing";' +
-          'var s=collab.getActiveCompState(false);' +
-          'return (typeof s==="string"&&s.charAt(0)==="{")?s:("state-null:"+String(s).slice(0,60));' +
-          '}catch(e){return "call-EXC:"+e.toString();}})()',
-        function (res) {
-        try {
-        state.polling = false;
-        state.pollCount = (state.pollCount || 0) + 1;
-        var tookMs = Date.now() - (state.pollStartedAt || Date.now());
-        state.pollMs = state.pollMs ? Math.round(state.pollMs * 0.8 + tookMs * 0.2) : tookMs;
-        state.lastPollResult = String(res || '').slice(0, 140);
-        if (state.pollCount <= 2) log('poll#' + state.pollCount + ' ' + String(res).slice(0, 90));
-        var next = null;
-        if (res === 'jsx-missing') {
-          state.missingPolls = (state.missingPolls || 0) + 1;
-          if (state.missingPolls === 8) log('hostscript not loaded during poll - check jsx/hostscript.jsx');
-        } else {
-          state.missingPolls = 0;
-          if (typeof res === 'string' && res.charAt(0) === '{') {
-            try { next = JSON.parse(res); } catch (e) { next = null; }
-          }
-        }
-        handleCompState(next);
-        } catch (e2) {
-          state.pollLoopError = (state.pollLoopError || 0) + 1;
-          if (state.pollLoopError <= 3) log('poll loop error: ' + (e2 && e2.message ? e2.message : String(e2)));
-        }
-        var idleMs = state.nativeMode ? NATIVE_IDLE_POLL_MS : POLL_SLOW_MS;
-        var delay = Date.now() - state.lastChangeAt < POLL_BURST_MS ? POLL_FAST_MS : idleMs;
-        scheduleAePoll(delay);
-      });
-    } catch (e) {
-      state.polling = false;
-      scheduleAePoll(POLL_SLOW_MS);
-    }
-  }
-
-  function scheduleFxPoll(delay) {
-    if (!inAE || !cs) return;
-    var gen = state.pollGeneration;
-    setTimeout(function () { if (state.pollGeneration === gen) pollFx(); }, delay);
-  }
-
-  function pollFx() {
-    if (!inAE || !cs || state.stamping) {
-      scheduleFxPoll(idleIntervalMs(FX_POLL_MS, NATIVE_FX_POLL_MS));
-      return;
-    }
-    if (!aeIsFocused()) {
-      scheduleFxPoll(2000);
-      return;
-    }
-    try {
-      state.fxChunk = (state.fxChunk || 0) % FX_CHUNKS;
-      var chunkIndex = state.fxChunk;
-      state.fxChunk = (chunkIndex + 1) % FX_CHUNKS;
-      cs.evalScript(
-        '(typeof collab === "undefined") ? "undefined" : collab.getActiveCompEffects(' + chunkIndex + ', ' + FX_CHUNKS + ')',
-        function (res) {
-        try {
-          state.fxPollCount = (state.fxPollCount || 0) + 1;
-          if (res && res.indexOf('EvalScript error') === 0) {
-            state.fxErrorCount = (state.fxErrorCount || 0) + 1;
-            if (state.fxErrorCount <= 5) log('fx poll error: ' + String(res).slice(0, 180));
-          }
-          var next = null;
-          if (res && res !== 'null' && res !== 'undefined' && res.indexOf('EvalScript error') !== 0) {
-            try { next = JSON.parse(res); } catch (e) { next = null; }
-          }
-          if (state.fxPollCount <= 3 || state.fxPollCount % 30 === 0) {
-            log('fx#' + state.fxPollCount + summarizeFx(next));
-          }
-          handleFxState(next);
-        } catch (e) {
-          state.fxLoopError = (state.fxLoopError || 0) + 1;
-          if (state.fxLoopError <= 3) log('fx loop error: ' + (e && e.message ? e.message : String(e)));
-        }
-        scheduleFxPoll(idleIntervalMs(FX_POLL_MS, NATIVE_FX_POLL_MS));
-      });
-    } catch (e) {
-      scheduleFxPoll(idleIntervalMs(FX_POLL_MS, NATIVE_FX_POLL_MS));
-    }
-  }
-
-  function summarizeFx(snapshot) {
-    if (!snapshot || !snapshot.layers) return ' no snapshot';
-    var fxCount = 0;
-    var paramCount = 0;
-    var sample = '';
-    for (var li = 0; li < snapshot.layers.length; li++) {
-      var fxs = snapshot.layers[li].effects || [];
-      fxCount += fxs.length;
-      for (var fi = 0; fi < fxs.length; fi++) {
-        var props = fxs[fi].props || {};
-        for (var pk in props) {
-          paramCount++;
-          if (!sample) sample = fxs[fi].id + '/' + pk + '=' + JSON.stringify(props[pk]).slice(0, 40);
-        }
-      }
-    }
-    return ' effects=' + fxCount + ' params=' + paramCount + (sample ? ' sample=' + sample : '');
-  }
-
-  function carryForwardEffectParams(prior, next) {
-    if (!prior || !prior.layers || !next || !next.layers) return;
-    var priorBySid = {};
-    var i;
-    var j;
-    var k;
-    for (i = 0; i < prior.layers.length; i++) priorBySid[prior.layers[i].sid] = prior.layers[i];
-    for (i = 0; i < next.layers.length; i++) {
-      var nl = next.layers[i];
-      var pl = priorBySid[nl.sid];
-      if (!pl) continue;
-      var priorFx = {};
-      for (j = 0; j < (pl.effects || []).length; j++) priorFx[pl.effects[j].id] = pl.effects[j];
-      for (k = 0; k < (nl.effects || []).length; k++) {
-        var ne = nl.effects[k];
-        if (!ne.paramsSkipped) continue;
-        var pe = priorFx[ne.id];
-        if (pe && pe.props) ne.props = pe.props;
-      }
-    }
-  }
-
-  function fetchEffectParamsAndSend(ops, index) {
-    var op = ops[index];
-    var compId = state.compId;
-    var layerSid = op.target.layer;
-    var fxId = String(op.path || '').substring(3);
-    cs.evalScript(
-      'collab.getLayerEffectParams(' + JSON.stringify(compId) + ',' + JSON.stringify(layerSid) + ',' + JSON.stringify(fxId) + ')',
-      function (res) {
-        var payload = null;
-        if (res && res !== 'null' && res.indexOf('EvalScript error') !== 0) {
-          try { payload = JSON.parse(res); } catch (e) { payload = null; }
-        }
-        if (payload && payload.props) op.value.props = payload.props;
-        for (var i = 0; i < ops.length; i++) send({ t: 'op', op: ops[i] });
-        txLog(ops);
-      }
-    );
-  }
-
-  function sendEffectOps(ops) {
-    for (var i = 0; i < ops.length; i++) {
-      if (ops[i].kind !== 'addEffect') continue;
-      var props = ops[i].value ? ops[i].value.props : null;
-      if (props && Object.keys(props).length > 0) continue;
-      fetchEffectParamsAndSend(ops, i);
-      return;
-    }
-    for (var j = 0; j < ops.length; j++) send({ t: 'op', op: ops[j] });
-    txLog(ops);
-  }
-
-  function handleFxState(next) {
-    if (!next || !state.connected || !CollabDiff || !CollabDiff.diffEffects) {
-      return;
-    }
-    if (next.comp.id !== state.compId) {
-      rememberFxState(next.comp.id, next);
-      return;
-    }
-    var prior = state.fxStates[next.comp.id];
-    carryForwardEffectParams(prior, next);
-    rememberFxState(next.comp.id, next);
-    if (!prior) return;
-    var ops = CollabDiff.diffEffects(prior, next, echo);
-    if (next.truncated && !state.effectsTruncatedWarned) {
-      state.effectsTruncatedWarned = true;
-      log('note: effects exceed sync budget - not all effects are synced');
-    }
-    if (ops.length === 0) return;
-    state.lastChangeAt = Date.now();
-    sendEffectOps(ops);
-  }
-
-  function rememberCompState(compKeyStr, snapshot) {
-    if (!compKeyStr) return;
-    state.compStates[compKeyStr] = snapshot;
-    var keys = [];
-    for (var k in state.compStates) keys.push(k);
-    while (keys.length > MAX_COMP_STATES) delete state.compStates[keys.shift()];
-  }
-
-  function rememberFxState(compKeyStr, snapshot) {
-    if (!compKeyStr) return;
-    state.fxStates[compKeyStr] = snapshot;
-    var keys = [];
-    for (var k in state.fxStates) keys.push(k);
-    while (keys.length > MAX_COMP_STATES) delete state.fxStates[keys.shift()];
-  }
-
-  function isStructureKind(kind) {
-    return kind === 'add' || kind === 'remove' || kind === 'reorder' || kind === 'addMask' || kind === 'removeMask';
-  }
-
-  function guardStructureOps(ops) {
-    var now = Date.now();
-    // Hold structure ops while a teammate in this comp has a different project
-    // structure - applying them would target divergent layers.
-    if (hasDivergence()) {
-      var keptDiv = [];
-      for (var d = 0; d < ops.length; d++) {
-        if (!isStructureKind(ops[d].kind)) keptDiv.push(ops[d]);
-      }
-      if (keptDiv.length !== ops.length && !state.divergenceLogged) {
-        state.divergenceLogged = true;
-        log('structure sync held: your project structure differs from a teammate - open the same project file');
-      }
-      return keptDiv;
-    }
-    if (state.structurePausedUntil > now) {
-      var keptWhilePaused = [];
-      for (var i = 0; i < ops.length; i++) {
-        if (!isStructureKind(ops[i].kind)) keptWhilePaused.push(ops[i]);
-      }
-      if (keptWhilePaused.length !== ops.length && !state.structurePauseLogged) {
-        state.structurePauseLogged = true;
-        log('structure sync paused - check that everyone has the same project file');
-      }
-      return keptWhilePaused;
-    }
-    state.structurePausedUntil = 0;
-    state.structurePauseLogged = false;
-    var times = state.structureTimes;
-    while (times.length > 0 && now - times[0] > STRUCTURE_WINDOW_MS) times.shift();
-    var structureCount = 0;
-    var j;
-    for (j = 0; j < ops.length; j++) {
-      if (isStructureKind(ops[j].kind)) structureCount++;
-    }
-    if (times.length + structureCount > STRUCTURE_LIMIT) {
-      state.structurePausedUntil = now + STRUCTURE_COOLDOWN_MS;
-      state.structurePauseLogged = true;
-      log('structure sync paused: too many add/remove ops in a burst (diverged projects?) - resuming in ' + STRUCTURE_COOLDOWN_MS / 1000 + 's');
-      var kept = [];
-      for (j = 0; j < ops.length; j++) {
-        if (!isStructureKind(ops[j].kind)) kept.push(ops[j]);
-      }
-      return kept;
-    }
-    for (j = 0; j < structureCount; j++) times.push(now);
-    return ops;
-  }
-
-  function rememberTextState(compKeyStr, snapshot) {
-    if (!compKeyStr) return;
-    state.textStates[compKeyStr] = snapshot;
-    var keys = [];
-    for (var k in state.textStates) keys.push(k);
-    while (keys.length > MAX_COMP_STATES) delete state.textStates[keys.shift()];
-  }
-
-  function scheduleTextPoll(delay) {
-    if (!inAE || !cs || !textSyncEnabled()) return;
-    var gen = state.pollGeneration;
-    setTimeout(function () { if (state.pollGeneration === gen) pollText(); }, delay);
-  }
-
-  function pollText() {
-    if (!inAE || !cs || !textSyncEnabled()) return;
-    if (state.stamping || !aeIsFocused()) {
-      scheduleTextPoll(idleIntervalMs(TEXT_POLL_MS, NATIVE_TEXT_POLL_MS));
-      return;
-    }
-    try {
-      cs.evalScript('(typeof collab === "undefined") ? "undefined" : collab.getTextState()', function (res) {
-        try {
-          var next = null;
-          if (res && res !== 'null' && res !== 'undefined' && res.indexOf('EvalScript error') !== 0) {
-            try { next = JSON.parse(res); } catch (e) { next = null; }
-          }
-          handleTextState(next);
-        } catch (e2) {
-          state.textLoopError = (state.textLoopError || 0) + 1;
-          if (state.textLoopError <= 3) log('text loop error: ' + (e2 && e2.message ? e2.message : String(e2)));
-        }
-        scheduleTextPoll(idleIntervalMs(TEXT_POLL_MS, NATIVE_TEXT_POLL_MS));
-      });
-    } catch (e) {
-      scheduleTextPoll(idleIntervalMs(TEXT_POLL_MS, NATIVE_TEXT_POLL_MS));
-    }
-  }
-
-  function handleTextState(next) {
-    if (!next || !state.connected || !CollabDiff || !CollabDiff.diffTextState) {
-      return;
-    }
-    if (next.comp.id !== state.compId) {
-      rememberTextState(next.comp.id, next);
-      return;
-    }
-    var prior = state.textStates[next.comp.id];
-    rememberTextState(next.comp.id, next);
-    if (!prior) return;
-    var ops = CollabDiff.diffTextState(prior, next, echo);
-    if (ops.length === 0) return;
-    state.lastChangeAt = Date.now();
-    for (var i = 0; i < ops.length; i++) send({ t: 'op', op: ops[i] });
-    txLog(ops);
-  }
-
-  function rememberShapeState(compKeyStr, snapshot) {
-    if (!compKeyStr) return;
-    state.shapeStates[compKeyStr] = snapshot;
-    var keys = [];
-    for (var k in state.shapeStates) keys.push(k);
-    while (keys.length > MAX_COMP_STATES) delete state.shapeStates[keys.shift()];
-  }
-
-  function scheduleShapePoll(delay) {
-    if (!inAE || !cs) return;
-    var gen = state.pollGeneration;
-    setTimeout(function () { if (state.pollGeneration === gen) pollShapes(); }, delay);
-  }
-
-  function pollShapes() {
-    if (!inAE || !cs) return;
-    if (state.stamping || !aeIsFocused()) {
-      scheduleShapePoll(idleIntervalMs(SHAPE_POLL_MS, NATIVE_SHAPE_POLL_MS));
-      return;
-    }
-    try {
-      cs.evalScript('(typeof collab === "undefined") ? "undefined" : collab.getShapeStates()', function (res) {
-        try {
-          var next = null;
-          if (res && res !== 'null' && res !== 'undefined' && res.indexOf('EvalScript error') !== 0) {
-            try { next = JSON.parse(res); } catch (e) { next = null; }
-          }
-          handleShapeState(next);
-        } catch (e2) {
-          state.shapeLoopError = (state.shapeLoopError || 0) + 1;
-          if (state.shapeLoopError <= 3) log('shape loop error: ' + (e2 && e2.message ? e2.message : String(e2)));
-        }
-        scheduleShapePoll(idleIntervalMs(SHAPE_POLL_MS, NATIVE_SHAPE_POLL_MS));
-      });
-    } catch (e) {
-      scheduleShapePoll(idleIntervalMs(SHAPE_POLL_MS, NATIVE_SHAPE_POLL_MS));
-    }
-  }
-
-  function handleShapeState(next) {
-    if (!next || !state.connected || !CollabDiff || !CollabDiff.diffShapeStates) {
-      return;
-    }
-    if (next.comp.id !== state.compId) {
-      rememberShapeState(next.comp.id, next);
-      return;
-    }
-    var prior = state.shapeStates[next.comp.id];
-    rememberShapeState(next.comp.id, next);
-    if (!prior) return;
-    var ops = CollabDiff.diffShapeStates(prior, next, echo);
-    if (ops.length === 0) return;
-    state.lastChangeAt = Date.now();
-    for (var i = 0; i < ops.length; i++) send({ t: 'op', op: ops[i] });
-    txLog(ops);
-  }
-
-  // Structural fingerprint of the active comp: comp id + ordered layer SIDs.
-  // Two clients on the SAME file produce the same value; different files don't.
-  function computeCompHash(comp, layers) {
-    if (!comp || !layers) return '';
-    var s = comp.id + ':' + layers.length;
-    for (var i = 0; i < layers.length; i++) s += ',' + layers[i].sid;
-    var h = 0;
-    for (var j = 0; j < s.length; j++) h = ((h << 5) - h + s.charCodeAt(j)) | 0;
-    return (h >>> 0).toString(16);
-  }
-
-  function hasDivergence() {
-    for (var k in state.divergedWith) {
-      if (state.divergedWith[k]) return true;
-    }
-    return false;
-  }
-
-  function checkCompDivergence(member) {
-    if (!member || !member.compId || !member.compHash) return;
-    if (!state.compId || member.compId !== state.compId) return;
-    if (!state.compHash) return;
-    if (member.compHash === state.compHash) {
-      if (state.divergedWith[member.id]) {
-        delete state.divergedWith[member.id];
-        if (!hasDivergence()) state.divergenceLogged = false;
-        log(member.name + ' now matches the project structure');
-      }
-      return;
-    }
-    if (state.divergedWith[member.id]) return;
-    state.divergedWith[member.id] = true;
-    log('WARNING: ' + member.name + ' has a DIFFERENT project structure in ' + compLabel(member.compId) + ' - not the same file. Structure sync held for this comp; both re-open the host\'s .aep.');
+    every(function () { fetchHostInfo(null); }, 10000);
+    kickCycle(POLL_FAST_MS);
   }
 
   // Drop every per-comp baseline. Must be called whenever the open project
@@ -1892,109 +1152,24 @@ var GESTURE_HOLD_MS = 700;
   function resetBaselines() {
     state.compId = null;
     state.compName = null;
+    state.compSid = null;
+    state.shadows = {};
+    state.shadowItems = null;
+    state.deepQueue = {};
+    state.fullNext = {};
+    state.sweepLayer = 0;
+    state.sweepIdx = 0;
+    state.sweeping = true;
+    state.chase = false;
+    state.readQueue = [];
+    state.compSids = [];
+    state.lastActiveSid = null;
+    state.inbox = [];
+    state.force = {};
+    state.stampJob = null;
     state.selection = [];
-    state.lastComp = null;
-    state.compStates = {};
-    state.fxStates = {};
-    state.textStates = {};
-    state.shapeStates = {};
-    state.compHash = '';
-    state.divergedWith = {};
-    state.divergenceLogged = false;
     state.baseOpened = false;
-    state.keysOmittedWarned = false;
     state.lastChangeAt = Date.now();
-  }
-
-  function computeProjectHash(comp) {
-    if (!comp) return '';
-    var h = 0;
-    var s = comp.id + '|' + comp.width + 'x' + comp.height + '|' + comp.frameRate + '|' + comp.numLayers;
-    for (var i = 0; i < s.length; i++) {
-      h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-    }
-    return (h >>> 0).toString(16);
-  }
-
-  function handleCompState(next) {
-    var newCompId = next ? next.comp.id : null;
-    var switched = newCompId !== state.compId;
-    var nextHash = next ? computeCompHash(next.comp, next.layers) : '';
-    if (switched) {
-      state.compId = newCompId;
-      state.compName = next ? next.comp.name : null;
-      $('compText').textContent = state.compName ? 'comp: ' + state.compName : '';
-      state.selection = next ? next.selection : [];
-      state.keysOmittedWarned = false;
-      if (next) {
-        var newHash = computeProjectHash(next.comp);
-        if (state.projectHash && state.projectHash !== newHash) {
-          log('note: project hash changed (' + state.projectHash + ' -> ' + newHash + ') - save and share the latest file');
-        }
-        state.projectHash = newHash;
-      }
-      state.compHash = nextHash;
-      state.divergedWith = {};
-      state.divergenceLogged = false;
-      log('active comp: ' + (state.compName || 'none'));
-      if (state.connected) send({ t: 'selection', compId: state.compId, layers: state.selection, hash: state.compHash });
-      for (var mi = 0; mi < state.order.length; mi++) checkCompDivergence(state.members[state.order[mi]]);
-      if (!next) {
-        state.lastComp = null;
-        state.compId = null;
-        state.compName = null;
-        state.selection = [];
-        return;
-      }
-      var priorVisit = state.compStates[newCompId];
-      if (!priorVisit) {
-        state.lastComp = next;
-        rememberCompState(newCompId, next);
-        return;
-      }
-      state.lastComp = priorVisit;
-    } else {
-      if (!next || !state.lastComp) {
-        state.lastComp = next;
-        return;
-      }
-      var selChanged = next.selection.join(',') !== state.selection.join(',');
-      var hashChanged = nextHash !== state.compHash;
-      if (selChanged) state.selection = next.selection;
-      state.compHash = nextHash;
-      if ((selChanged || hashChanged) && state.connected) {
-        send({ t: 'selection', compId: state.compId, layers: state.selection, hash: state.compHash });
-      }
-      if (!CollabDiff || !echo) {
-        state.lastComp = next;
-        rememberCompState(newCompId, next);
-        return;
-      }
-    }
-
-    var priorState = state.lastComp;
-    var additions = CollabDiff.findAdditions(priorState, next, echo);
-    var ops = CollabDiff.diffComp(priorState, next, echo);
-    state.lastComp = next;
-    rememberCompState(newCompId, next);
-    if (next.hasOmittedKeys && !state.keysOmittedWarned) {
-      state.keysOmittedWarned = true;
-      log('note: some keyframed properties exceed sync budget and are skipped');
-    }
-    if (ops.length > 0) {
-      state.lastChangeAt = Date.now();
-      ops = guardStructureOps(ops);
-      ops = debounceTextOps(ops);
-    }
-    if (ops.length > 0) {
-      if (ops.length > MAX_OPS_PER_POLL) {
-        log('warning: dropping ' + (ops.length - MAX_OPS_PER_POLL) + ' op(s) this tick');
-        ops = ops.slice(0, MAX_OPS_PER_POLL);
-      }
-      for (var i = 0; i < ops.length; i++) send({ t: 'op', op: ops[i] });
-      txLog(ops);
-    }
-    if (additions.length > 0) syncAdditions(additions);
   }
 
   function randomHex(len) {
@@ -2002,180 +1177,6 @@ var GESTURE_HOLD_MS = 700;
     var out = '';
     for (var i = 0; i < len; i++) out += chars.charAt(Math.floor(Math.random() * 16));
     return out;
-  }
-
-  function patchLastCompSid(oldSid, newSid) {
-    var comp = state.lastComp;
-    if (!comp) return;
-    var i;
-    for (i = 0; i < comp.layers.length; i++) {
-      if (comp.layers[i].sid === oldSid) comp.layers[i].sid = newSid;
-    }
-    for (i = 0; i < comp.selection.length; i++) {
-      if (comp.selection[i] === oldSid) comp.selection[i] = newSid;
-    }
-    for (i = 0; i < state.selection.length; i++) {
-      if (state.selection[i] === oldSid) state.selection[i] = newSid;
-    }
-  }
-
-  function baseDescriptor(layer) {
-    var d = {
-      name: layer.name,
-      index: layer.index,
-      inPoint: layer.inPoint,
-      outPoint: layer.outPoint,
-      startTime: layer.startTime,
-      enabled: layer.enabled,
-      transform: {}
-    };
-    for (var i = 0; i < CollabDiff.SYNCED_PROPS.length; i++) {
-      var name = CollabDiff.SYNCED_PROPS[i];
-      var src = layer.transform ? layer.transform[name] : null;
-      if (!src) continue;
-      var entry = {};
-      if (src.value !== undefined) entry.value = src.value;
-      if (src.keys) entry.keys = src.keys;
-      if (src.expr) {
-        entry.expr = src.expr;
-        entry.exprOn = src.exprOn;
-      }
-      d.transform[name] = entry;
-    }
-    return d;
-  }
-
-  function describeLayer(layer) {
-    if (layer.type === 'shape') return null;
-    var d = baseDescriptor(layer);
-    if (layer.type === 'text') {
-      d.type = 'text';
-      d.sourceText = (layer.textDoc && layer.textDoc.text) || '';
-      return d;
-    }
-    if (layer.avKind === 'adjustment') {
-      d.type = 'adjustment';
-      return d;
-    }
-    if (layer.avKind === 'null') {
-      d.type = 'null';
-      return d;
-    }
-    if (layer.avKind === 'solid' && layer.solid) {
-      d.type = 'solid';
-      d.solid = layer.solid;
-      return d;
-    }
-    if (layer.avKind === 'footage' && layer.source) {
-      d.type = 'footage';
-      d.source = layer.source;
-      return d;
-    }
-    if (layer.avKind === 'comp' && layer.sourceComp) {
-      d.type = 'comp';
-      d.sourceComp = layer.sourceComp;
-      return d;
-    }
-    return null;
-  }
-
-  function emitAdd(sid, descriptor, layer, rest) {
-    var op = {
-      opId: Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4),
-      kind: 'add',
-      target: { comp: state.compId, layer: sid },
-      value: descriptor,
-      index: layer.index
-    };
-    send({ t: 'op', op: op });
-    state.structureTimes.push(Date.now());
-    log('tx add ' + descriptor.type + ' "' + descriptor.name + '"');
-    syncAdditions(rest);
-  }
-
-  function syncAdditions(additions) {
-    if (additions.length === 0 || state.stamping) return;
-    if (!cs || !inAE || !state.compId) return;
-    var layer = additions[0];
-    var rest = additions.slice(1);
-    var descriptor = describeLayer(layer);
-    if (!descriptor && layer.type === 'shape') {
-      fetchShapeDescriptor(layer, rest);
-      return;
-    }
-    if (!descriptor) {
-      if (!state.unsupportedAddWarned) {
-        state.unsupportedAddWarned = true;
-        log('note: added layer type not synced yet (' + (layer.type || '?') + '/' + (layer.avKind || '?') + ')');
-      }
-      syncAdditions(rest);
-      return;
-    }
-    proceedAdd(descriptor, layer, rest);
-  }
-
-  function fetchShapeDescriptor(layer, rest) {
-    if (!cs || !inAE || !state.compId) return;
-    var compId = state.compId;
-    cs.evalScript(
-      'collab.getLayerShape(' + JSON.stringify(compId) + ',' + JSON.stringify(layer.sid) + ')',
-      function (res) {
-        var payload = null;
-        if (res && res !== 'null' && res.indexOf('EvalScript error') !== 0) {
-          try { payload = JSON.parse(res); } catch (e) { payload = null; }
-        }
-        if (!payload || !payload.tree) {
-          if (!state.shapeWarned) {
-            state.shapeWarned = true;
-            log('note: could not read shape contents - shape layer not synced');
-          }
-          syncAdditions(rest);
-          return;
-        }
-        var descriptor = baseDescriptor(layer);
-        descriptor.type = 'shape';
-        descriptor.shape = payload.tree;
-        proceedAdd(descriptor, layer, rest);
-      }
-    );
-  }
-
-  function proceedAdd(descriptor, layer, rest) {
-    var nowAdd = Date.now();
-    while (state.structureTimes.length > 0 && nowAdd - state.structureTimes[0] > STRUCTURE_WINDOW_MS) {
-      state.structureTimes.shift();
-    }
-    if (state.structureTimes.length >= STRUCTURE_LIMIT) {
-      state.structurePausedUntil = nowAdd + STRUCTURE_COOLDOWN_MS;
-      if (!state.structurePauseLogged) {
-        state.structurePauseLogged = true;
-        log('structure sync paused after a burst - not syncing new layers for ' + STRUCTURE_COOLDOWN_MS / 1000 + 's');
-      }
-      return;
-    }
-    var oldSid = layer.sid;
-    if (oldSid && oldSid.indexOf('st') === 0) {
-      emitAdd(oldSid, descriptor, layer, rest);
-      return;
-    }
-    var hex = randomHex(12);
-    var newSid = 'st' + hex;
-    var compId = state.compId;
-    state.stamping = true;
-    state.stampStartedAt = Date.now();
-    patchLastCompSid(oldSid, newSid);
-    cs.evalScript(
-      'collab.stampLayer(' + JSON.stringify(compId) + ',' + JSON.stringify(oldSid) + ',' + JSON.stringify(hex) + ')',
-      function (res) {
-        state.stamping = false;
-        if (!res || res.indexOf('"ok":true') < 0) {
-          log('add: stamp failed (' + String(res).slice(0, 80) + ')');
-          patchLastCompSid(newSid, oldSid);
-          return;
-        }
-        emitAdd(newSid, descriptor, layer, rest);
-      }
-    );
   }
 
   function initStyles() {
@@ -2191,7 +1192,7 @@ var GESTURE_HOLD_MS = 700;
     });
   }
 
-  setInterval(function () {
+  every(function () {
     if (!state.connected) return;
     var c = state.pendingCursor;
     if (!c) return;
@@ -2201,18 +1202,18 @@ var GESTURE_HOLD_MS = 700;
     send(msg);
   }, CURSOR_FLUSH_MS);
 
-  setInterval(function () {
+  every(function () {
     if (!state.connected) return;
     state.lastPingAt = Date.now();
     send({ t: 'ping', ts: state.lastPingAt });
   }, PING_INTERVAL_MS);
 
-  setInterval(function () {
+  every(function () {
     if (!state.connected) return;
-    log('stats: ping=' + state.latencyMs + 'ms tx=' + state.opsSent + ' rx=' + state.opsReceived + ' queued=' + state.remoteQueue.length + ' native=' + (state.nativeMode ? 'on' : 'off') + ' hash=' + (state.projectHash || '-'));
+    log('stats: ping=' + state.latencyMs + 'ms tx=' + state.opsSent + ' rx=' + state.opsReceived + ' queued=' + state.inbox.length + ' native=' + (state.nativeMode ? 'on' : 'off') + ' hash=' + (state.projectHash || '-'));
   }, 30000);
 
-  setInterval(renderHealth, 1000);
+  every(renderHealth, 1000);
 
   $('connectBtn').addEventListener('click', function () {
     if (state.connected) {
@@ -2252,7 +1253,555 @@ var GESTURE_HOLD_MS = 700;
 
   window.addEventListener('resize', renderCanvas);
 
+  // ------------------------------------------------------------ sync engine v2
+  // One loop: hand AE the remote ops that arrived, get back snapshots taken
+  // right after they were applied, adopt what the ops touched as shared state,
+  // and send whatever else differs from the shadow as the local user's edits.
+  var CYCLE_ACTIVE_MS = 150;
+  var CYCLE_IDLE_MS = 400;
+  var CYCLE_WATCHDOG_MS = 120000;
+  var MAX_OPS_PER_CYCLE = 400;
+  var MAX_BATCH_OPS = 150;
+  var MAX_BATCH_CHARS = 400000;
+  var SWEEP_LAYERS = 6;
+  var ESCALATE_MIN_MS = 3000;
+  var ESCALATE_MAX_MS = 60000;
+
+  function kickCycle(delay) {
+    if (!inAE || !cs || !Sync) return;
+    var due = Date.now() + delay;
+    if (state.cycleTimer) {
+      if (state.cycleDueAt <= due) return;
+      clearTimeout(state.cycleTimer);
+    }
+    state.cycleDueAt = due;
+    var gen = state.pollGeneration;
+    state.cycleTimer = later(function () {
+      state.cycleTimer = null;
+      if (state.pollGeneration === gen) runCycle();
+    }, Math.max(0, delay));
+  }
+
+  function innerOps(op) {
+    if (op && op.kind === 'batch') return (op.value && op.value.ops) || [];
+    return [op];
+  }
+
+  // Remote ops are queued as groups: one teammate gesture is applied in one
+  // After Effects call, so its side effects never surface half-way.
+  function acceptRemote(op) {
+    var list = innerOps(op);
+    var group = [];
+    for (var i = 0; i < list.length; i++) {
+      var inner = list[i];
+      if (!inner || !inner.target || !Sync.isKind(inner.kind)) continue;
+      var key = Sync.targetKey(inner);
+      // Our own unacknowledged edit to the same value is later in relay
+      // order, so it wins everywhere; applying this one here would diverge.
+      if (key && state.pending[key]) {
+        state.lwwSkips++;
+        continue;
+      }
+      group.push(inner);
+    }
+    if (group.length > 0) state.inbox.push(group);
+    return group.length;
+  }
+
+  function onRemoteOp(msg) {
+    var op = msg.op;
+    if (!op || !Sync) return;
+    if (msg.author === state.selfId) {
+      var own = innerOps(op);
+      for (var i = 0; i < own.length; i++) {
+        var key = Sync.targetKey(own[i]);
+        if (key && state.pending[key]) {
+          if (--state.pending[key] <= 0) delete state.pending[key];
+        }
+      }
+      return;
+    }
+    if (op.opId) {
+      if (state.seenOps[op.opId]) return;
+      state.seenOps[op.opId] = 1;
+      if (++state.seenOpCount > 5000) {
+        state.seenOps = {};
+        state.seenOpCount = 0;
+      }
+    }
+    state.opsReceived += innerOps(op).length;
+    if (!inAE) return;
+    if (acceptRemote(op) > 0) {
+      maybeLogRx(op.kind, op.kind === 'batch' ? innerOps(op).length + ' edit(s)' : op.path);
+      kickCycle(0);
+    }
+  }
+
+  function sendOps(ops) {
+    var live = state.ws && state.ws.readyState === 1;
+    var keys = {};
+    var any = false;
+    var i;
+    for (i = 0; i < ops.length; i++) {
+      var key = Sync.targetKey(ops[i]);
+      if (!key) continue;
+      keys[key] = 1;
+      any = true;
+      if (live) state.pending[key] = (state.pending[key] || 0) + 1;
+    }
+    // Anything still queued for a value we are now sending is older in relay
+    // order than our edit, so it must not be applied after it.
+    if (any) {
+      for (i = state.inbox.length - 1; i >= 0; i--) {
+        var kept = [];
+        for (var j = 0; j < state.inbox[i].length; j++) {
+          var qk = Sync.targetKey(state.inbox[i][j]);
+          if (qk && keys[qk]) state.lwwSkips++;
+          else kept.push(state.inbox[i][j]);
+        }
+        if (kept.length === 0) state.inbox.splice(i, 1);
+        else state.inbox[i] = kept;
+      }
+    }
+    var chunk = [];
+    var size = 0;
+    function flush() {
+      if (chunk.length === 0) return;
+      if (chunk.length === 1) {
+        send({ t: 'op', op: chunk[0] });
+      } else {
+        send({ t: 'op', op: { opId: chunk[0].opId + 'b', kind: 'batch', target: { comp: chunk[0].target.comp }, value: { ops: chunk } } });
+      }
+      chunk = [];
+      size = 0;
+    }
+    for (i = 0; i < ops.length; i++) {
+      var len = JSON.stringify(ops[i]).length;
+      if (chunk.length >= MAX_BATCH_OPS || (chunk.length > 0 && size + len > MAX_BATCH_CHARS)) flush();
+      chunk.push(ops[i]);
+      size += len;
+    }
+    flush();
+    txLog(ops);
+  }
+
+  // What to read this cycle. The active comp always; every layer the incoming
+  // ops touch (so the result can be adopted); whatever was selected a moment
+  // ago (an edit followed by a click-away); comps created a moment ago; and a
+  // small rotating slice of everything else as a safety net.
+  function pickReads(ops) {
+    var by = {};
+    var order = [];
+    var i;
+    var sid;
+    function entry(compSid, firm) {
+      if (!by[compSid]) {
+        by[compSid] = { c: compSid, deep: {}, firm: false };
+        order.push(compSid);
+      }
+      if (firm) by[compSid].firm = true;
+      return by[compSid];
+    }
+    for (i = 0; i < ops.length; i++) {
+      var e = entry(Sync.sidPart(ops[i].target.comp), false);
+      if (ops[i].target.layer) e.deep[ops[i].target.layer] = 1;
+    }
+    // Anything queued must be read even if the project has not changed since.
+    var must = ops.length > 0 || state.readQueue.length > 0 || hasKeys(state.deepQueue) || hasKeys(state.fullNext) || state.sweeping;
+    for (i = 0; i < state.readQueue.length; i++) entry(state.readQueue[i], true);
+    state.readQueue = [];
+    for (sid in state.deepQueue) {
+      var q = entry(sid, true);
+      for (var layerSid in state.deepQueue[sid]) q.deep[layerSid] = 1;
+    }
+    state.deepQueue = {};
+    var act = state.lastActiveSid;
+    if (act) {
+      var a = entry(act, true);
+      for (i = 0; i < state.selection.length; i++) a.deep[state.selection[i]] = 1;
+    }
+    var comps = state.compSids;
+    state.sweepComp = null;
+    if (state.sweeping && comps.length > 0 && state.sweepIdx >= comps.length) {
+      // Went all the way round: every comp has been looked at.
+      state.sweeping = false;
+      state.sweepIdx = 0;
+      state.sweepLayer = 0;
+    }
+    if (state.sweeping && comps.length > 0) {
+      state.sweepComp = comps[state.sweepIdx];
+      entry(state.sweepComp, true).sweep = [state.sweepLayer, SWEEP_LAYERS];
+    }
+    var active = {};
+    var read = [];
+    for (i = 0; i < order.length; i++) {
+      var r = by[order[i]];
+      if (!state.shadows[r.c] || state.fullNext[r.c]) {
+        // No baseline yet: read it whole, unless only a remote op named it
+        // (then there is nothing to adopt into and the first visit will do).
+        if (!r.firm) continue;
+        r.all = 1;
+      }
+      delete r.firm;
+      if (r.c === act) active = r;
+      else read.push(r);
+    }
+    state.fullNext = {};
+    return { active: active, read: read, must: must };
+  }
+
+  function runCycle() {
+    if (state.cycleBusy) {
+      // After Effects answers scripts strictly in order, so asking again while
+      // it is busy (a long render, a big paste) would only stack work up.
+      if (Date.now() - state.cycleStartedAt < CYCLE_WATCHDOG_MS) {
+        kickCycle(CYCLE_ACTIVE_MS);
+        return;
+      }
+      log('sync watchdog: After Effects did not answer for ' + CYCLE_WATCHDOG_MS / 1000 + 's, asking again');
+    }
+    var ops = [];
+    while (state.inbox.length > 0 && (ops.length === 0 || ops.length + state.inbox[0].length <= MAX_OPS_PER_CYCLE)) {
+      ops = ops.concat(state.inbox.shift());
+    }
+    var forced = state.force;
+    var plan = pickReads(ops);
+    var req = { ops: ops, force: forced, active: plan.active, read: plan.read, rev: state.rev };
+    if (plan.must || hasKeys(forced)) req.must = 1;
+    state.force = {};
+    if (state.stampJob) {
+      req.stamp = state.stampJob;
+      state.stampJob = null;
+    }
+    state.cycleBusy = true;
+    state.cycleStartedAt = Date.now();
+    var gen = state.pollGeneration;
+    cs.evalScript(
+      '(typeof vynkSync === "undefined") ? "nosync" : vynkSync.cycle(' + JSON.stringify(JSON.stringify(req)) + ')',
+      function (res) {
+        state.cycleBusy = false;
+        if (stale() || state.pollGeneration !== gen) return;
+        var out = null;
+        if (typeof res === 'string' && res.charAt(0) === '{') {
+          try { out = JSON.parse(res); } catch (e) { out = null; }
+        }
+        var done = out && out.r ? out.r.length : 0;
+        if (done < ops.length) state.inbox.unshift(ops.slice(done));
+        if (!out) {
+          // AE refuses scripts while a modal dialog is open; just try again.
+          logThrottled('cyclefail', 'sync paused: After Effects is busy (' + String(res).slice(0, 80) + ')', 10000);
+          kickCycle(1000);
+          return;
+        }
+        if (out.error) logThrottled('cycleerr', 'sync error: ' + out.error, 5000);
+        var took = Date.now() - state.cycleStartedAt;
+        state.cycleMs = out.ms || 0;
+        state.pollMs = state.pollMs ? Math.round(state.pollMs * 0.8 + took * 0.2) : took;
+        state.pollCount++;
+        var changed = false;
+        var edited = state.rev >= 0 && out.revBefore !== state.rev;
+        try {
+          if (projectSwitched(out)) {
+            log('project changed - sync restarts from the project that is open now');
+            resetBaselines();
+            state.baseOpened = !!(state.baseInfo && out.host && out.host.projectName === state.baseInfo.name);
+            changed = true;
+          } else if (out.same) {
+            noteActive(out.active || null, out.aid || null, out.sel || []);
+          } else {
+            changed = handleCycle(out, ops.slice(0, done), forced);
+          }
+        } catch (e2) {
+          logThrottled('cyclethrow', 'sync loop error: ' + (e2 && e2.message ? e2.message : String(e2)), 5000);
+        }
+        if (state.harness && !out.same) {
+          log('cycle ' + took + 'ms rev ' + state.rev + '>' + out.revBefore + '>' + out.rev + ' applied=' + done + ' snaps=' + (out.snaps ? out.snaps.length : 0) +
+            ' all=' + (plan.active.all ? 1 : 0) + ' read=' + plan.read.length + ' changed=' + changed + ' stamp=' + (state.stampJob ? 1 : 0) +
+            ' dq=' + (hasKeys(state.deepQueue) ? 1 : 0) + ' chase=' + state.chase + ' sweep=' + state.sweeping + ':' + state.sweepIdx + ':' + state.sweepLayer + ' act=' + state.lastActiveSid);
+        }
+        if (typeof out.rev === 'number' && !state.resetPending) state.rev = out.rev;
+        state.resetPending = false;
+        if (changed) state.lastChangeAt = Date.now();
+        // The project was edited but nothing that was read in depth explains
+        // it. Read the whole active comp once (backing off while that keeps
+        // finding nothing), then walk the rest of the project in small slices.
+        if (state.chase && plan.active.all) {
+          state.chase = false;
+          state.escalateGapMs = changed ? ESCALATE_MIN_MS : Math.min(ESCALATE_MAX_MS, state.escalateGapMs * 2);
+          if (!changed) state.sweeping = true;
+        } else if (edited && !changed && !out.same && done === 0) {
+          if (state.lastActiveSid && !plan.active.all && Date.now() - state.escalateAt > state.escalateGapMs) {
+            state.escalateAt = Date.now();
+            state.chase = true;
+            state.fullNext[state.lastActiveSid] = 1;
+            state.readQueue.push(state.lastActiveSid);
+          } else {
+            state.sweeping = true;
+          }
+        }
+        var delay;
+        if (state.inbox.length > 0 || state.stampJob || state.readQueue.length > 0 || hasKeys(state.deepQueue) || hasKeys(state.fullNext) || hasKeys(state.force)) delay = 0;
+        else if (state.sweeping) delay = CYCLE_ACTIVE_MS;
+        else if (Date.now() - state.lastChangeAt < POLL_BURST_MS) delay = CYCLE_ACTIVE_MS;
+        else delay = state.nativeMode ? NATIVE_IDLE_POLL_MS : CYCLE_IDLE_MS;
+        // Never spend more than about a third of AE's time reading.
+        if (delay > 0) delay = Math.max(delay, state.cycleMs * 2);
+        state.pollScheduledDelay = delay;
+        kickCycle(delay);
+      }
+    );
+  }
+
+  // Opening or creating another project is not an edit. The revision counter
+  // only ever goes up inside one project, and the file path names it.
+  function projectSwitched(out) {
+    var path = (out.host && out.host.projectPath) || '';
+    var switched = false;
+    if (state.cyclePath !== undefined && path !== state.cyclePath) switched = true;
+    if (state.rev >= 0 && typeof out.revBefore === 'number' && out.revBefore >= 0 && out.revBefore < state.rev) switched = true;
+    state.cyclePath = path;
+    if (switched) {
+      state.resetPending = true;
+      state.rev = -1;
+    }
+    return switched;
+  }
+
+  function noteActive(activeSid, activeId, sel) {
+    if (activeId !== state.compId) {
+      state.compSid = activeId ? activeSid : null;
+      state.compId = activeId;
+      state.compName = activeId ? activeId.substring(activeId.indexOf('|') + 1) : null;
+      state.selection = sel;
+      $('compText').textContent = state.compName ? 'comp: ' + state.compName : '';
+      log('active comp: ' + (state.compName || 'none'));
+      announceSelection();
+    } else if (activeId && sel.join(',') !== state.selection.join(',')) {
+      state.selection = sel;
+      announceSelection();
+    }
+    if (activeId) state.lastActiveSid = activeSid;
+  }
+
+  function hasKeys(obj) {
+    for (var k in obj) return true;
+    return false;
+  }
+
+  function announceSelection() {
+    if (state.connected) send({ t: 'selection', compId: state.compId, layers: state.selection });
+  }
+
+  function handleCycle(out, applied, forced) {
+    var i;
+    var sid;
+    for (i = 0; i < applied.length; i++) {
+      if (!out.r[i]) continue;
+      state.applyFails = (state.applyFails || 0) + 1;
+      logThrottled('applyfail:' + applied[i].kind + ':' + String(out.r[i]).slice(0, 40), 'apply failed: ' + applied[i].kind + ' ' + (applied[i].path || '') + ' - ' + out.r[i], 3000);
+    }
+    var snaps = out.snaps || [];
+    var active = null;
+    for (i = 0; i < snaps.length; i++) {
+      if (Sync.sidPart(snaps[i].id) === out.active) active = snaps[i];
+    }
+    noteActive(active ? out.active : null, active ? active.id : null, active ? active.sel : []);
+
+    if (!state.everConnected) return false;
+    var live = true;
+    var stamp = { items: [], layers: [] };
+    var ops = [];
+    var changed = applied.length > 0;
+
+    // ---- project items (comps and folders)
+    var items = out.items || [];
+    var comps = [];
+    for (i = 0; i < items.length; i++) {
+      if (items[i].type === 'comp') comps.push(items[i].sid);
+    }
+    state.compSids = comps;
+    var survivors = 0;
+    if (state.shadowItems) {
+      var nowBy = {};
+      for (i = 0; i < items.length; i++) nowBy[items[i].sid] = 1;
+      for (i = 0; i < state.shadowItems.length; i++) {
+        if (nowBy[state.shadowItems[i].sid]) survivors++;
+      }
+    }
+    if (state.shadowItems && state.shadowItems.length > 0 && survivors === 0) {
+      // Every comp and folder we knew is gone at once: that is a different
+      // project (File > New, Close), never a teammate-visible delete.
+      log('project changed - sync restarts from the project that is open now');
+      resetBaselines();
+      state.rev = -1;
+      state.resetPending = true;
+      return true;
+    }
+    if (!state.shadowItems || !live) {
+      state.shadowItems = items;
+    } else {
+      Sync.adoptItems(state.shadowItems, items, applied);
+      for (i = 0; i < applied.length; i++) {
+        // A comp a teammate just created: adopt it as it stands after creation.
+        if (applied[i].kind === 'iadd' && applied[i].value && applied[i].value.type === 'comp' && !out.r[i]) {
+          delete state.shadows[applied[i].value.sid];
+        }
+      }
+      var freshItems = Sync.unstampedItems(state.shadowItems, items);
+      if (freshItems.length > 0) {
+        for (i = 0; i < freshItems.length; i++) stamp.items.push([freshItems[i], randomHex(12)]);
+      } else {
+        var itemOps = Sync.diffItems(state.shadowItems, items);
+        for (i = 0; i < itemOps.length; i++) {
+          ops.push(itemOps[i]);
+          if (itemOps[i].kind === 'iadd' && itemOps[i].value.type === 'comp') {
+            // Created here: teammates start it empty, so everything in it is news.
+            state.shadows[itemOps[i].value.sid] = Sync.emptyComp(itemOps[i].value.sid);
+            state.readQueue.push(itemOps[i].value.sid);
+          }
+          if (itemOps[i].kind === 'irm') delete state.shadows[itemOps[i].target.comp];
+        }
+        state.shadowItems = items;
+      }
+    }
+
+    // ---- comps
+    var seenSnap = {};
+    for (var si = 0; si < snaps.length; si++) {
+      var snap = snaps[si];
+      var compSid = Sync.sidPart(snap.id);
+      seenSnap[compSid] = 1;
+      if (compSid === state.sweepComp) {
+        state.sweepLayer += SWEEP_LAYERS;
+        if (state.sweepLayer >= snap.layers.length) {
+          state.sweepIdx++;
+          state.sweepLayer = 0;
+        }
+        state.sweepComp = null;
+      }
+      var shadow = state.shadows[compSid];
+      if (!shadow || !live) {
+        if (snap.full) {
+          state.shadows[compSid] = snap;
+        } else if (!shadow) {
+          state.fullNext[compSid] = 1;
+          state.readQueue.push(compSid);
+        }
+        continue;
+      }
+      // Layers that were only listed keep the property tree the shadow holds.
+      var known = {};
+      for (i = 0; i < shadow.layers.length; i++) known[shadow.layers[i].sid] = shadow.layers[i];
+      var unknown = false;
+      for (i = 0; i < snap.layers.length; i++) {
+        var lite = snap.layers[i];
+        if (!lite.lite) continue;
+        var held = known[lite.sid];
+        if (!held) {
+          unknown = true;
+          state.deepQueue[compSid] = state.deepQueue[compSid] || {};
+          state.deepQueue[compSid][lite.sid] = 1;
+          continue;
+        }
+        lite.p = held.p;
+        lite.g = held.g;
+        lite.kind = held.kind;
+        if (held.src) lite.src = held.src;
+        if (held.box) lite.box = held.box;
+        delete lite.lite;
+      }
+      if (applied.length) Sync.adopt(shadow, snap, applied);
+      if (unknown) continue;
+      // Items being stamped this cycle are not announced yet, so hold back
+      // anything that could refer to them.
+      if (stamp.items.length > 0) continue;
+      var fresh = Sync.unstamped(shadow, snap);
+      if (fresh.length > 0) {
+        // Newly created layers get a room-wide id first; they are announced
+        // from the next snapshot, which already shows them stamped.
+        for (i = 0; i < fresh.length; i++) stamp.layers.push([snap.id, fresh[i], randomHex(12)]);
+        state.readQueue.push(compSid);
+        continue;
+      }
+      var d = Sync.diff(shadow, snap, { forced: forced });
+      for (sid in d.keep) {
+        for (i = 0; i < snap.layers.length; i++) {
+          if (snap.layers[i].sid !== sid) continue;
+          for (var path in d.keep[sid]) snap.layers[i].p[path] = d.keep[sid][path];
+        }
+        state.force[sid] = 1;
+        state.readQueue.push(compSid);
+      }
+      state.shadows[compSid] = snap;
+      for (i = 0; i < d.ops.length; i++) ops.push(d.ops[i]);
+    }
+    // A comp touched by remote ops that could not be read back has no state to
+    // adopt; drop its shadow so the next read starts from what AE then holds.
+    for (i = 0; i < applied.length; i++) {
+      var touched = Sync.sidPart(applied[i].target.comp);
+      if (applied[i].kind.charAt(0) !== 'i' && !seenSnap[touched]) delete state.shadows[touched];
+    }
+    if (state.sweepComp) {
+      state.sweepIdx++;
+      state.sweepLayer = 0;
+    }
+
+    if (stamp.items.length > 0 || stamp.layers.length > 0) {
+      state.stampJob = stamp;
+      changed = true;
+    }
+    if (ops.length > 0) {
+      sendOps(ops);
+      changed = true;
+    }
+    return changed;
+  }
+
+  // Two-instance test harness (tools/ae-pair). Inert unless
+  // %LOCALAPPDATA%\Vynk\harness.json has an entry for this AE version.
+  function initHarness() {
+    if (!inAE || !cs || typeof require !== 'function') return;
+    var fs;
+    var cfg;
+    try {
+      fs = require('fs');
+      var all = JSON.parse(fs.readFileSync((process.env.LOCALAPPDATA || '') + '\\Vynk\\harness.json', 'utf8'));
+      cfg = all[String(hostVersion).split('.').slice(0, 2).join('.')];
+    } catch (e) { return; }
+    if (!cfg || !cfg.dir || !cfg.name) return;
+    state.harness = true;
+    $('serverInput').value = cfg.server || '';
+    $('roomInput').value = cfg.room || '';
+    $('nameInput').value = cfg.name;
+    var busy = false;
+    every(function () {
+      if (busy) return;
+      var file = cfg.dir + '\\' + cfg.name + '.cmd';
+      var cmd;
+      try {
+        cmd = JSON.parse(fs.readFileSync(file, 'utf8'));
+        fs.unlinkSync(file);
+      } catch (e) { return; }
+      busy = true;
+      var done = function (result) {
+        busy = false;
+        try {
+          fs.writeFileSync(file + '.tmp', JSON.stringify({ id: cmd.id, result: String(result) }));
+          fs.renameSync(file + '.tmp', cfg.dir + '\\' + cfg.name + '.res');
+        } catch (e) {}
+      };
+      if (cmd.js) {
+        var out;
+        try { out = eval(cmd.js); } catch (e) { out = 'ERR ' + e; }
+        done(out);
+      } else {
+        cs.evalScript(cmd.jsx, done);
+      }
+    }, 80);
+  }
+
   loadSettings();
+  initHarness();
   initStyles();
   renderMembers();
   renderBase();

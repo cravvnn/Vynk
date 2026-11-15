@@ -100,9 +100,9 @@ let fuzzRounds = 0;
 async function runFuzzRound() {
   fuzzRounds++;
   const seed = Math.floor(Math.random() * 1e9);
-  const res = await runOnce(process.execPath, ['tools/fuzz-diff.mjs', String(seed), '1000'], {}, 300000, `fuzz #${fuzzRounds} seed=${seed}`);
+  const res = await runOnce(process.execPath, ['tools/test-sync.mjs'], {}, 300000, `fuzz #${fuzzRounds} seed=${seed}`);
   if (res.code !== 0) {
-    log(`FUZZ FAILURE (seed=${seed}) - reproduce with: node tools/fuzz-diff.mjs ${seed} 1000 --verbose`);
+    log(`SYNC MODEL TEST FAILURE - reproduce with: node tools/test-sync.mjs`);
   }
 }
 
