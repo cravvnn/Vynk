@@ -12,14 +12,15 @@ function requireOk(result) {
 
 async function fixture(h, tag, share) {
   const name = 'Recovery ' + tag;
-  requireOk(await h.jsx('A', body("var c=app.project.items.addComp(" + literal(name) + ",800,600,1,6,30);c.layers.addNull(6).name='Left';c.layers.addNull(6).name='Right'")));
+  requireOk(await h.jsx('A', body("var c=app.project.items.addComp(" + literal(name) + ",800,600,1,6,30);c.layers.addSolid([0.2,0.4,0.6],'Left',800,600,1,6);c.layers.addSolid([0.6,0.4,0.2],'Right',800,600,1,6)")));
   if (!(await h.waitFor(async () => (await h.jsx('B', "(function(){var c=" + comp(name) + ";return c&&vynkPair.layer(c,'Left')&&vynkPair.layer(c,'Right')?'ready':'waiting';})()")) === 'ready', 45000, name + ' setup'))) throw new Error('fixture did not reach B');
   await h.sleep(1500);
+  for (const who of ['A', 'B']) requireOk(await h.jsx(who, body("var c=" + comp(name) + ";c.openInViewer();for(var i=1;i<=c.numLayers;i++)c.layer(i).selected=c.layer(i).name==='Left'")));
   if (share) await shareFixture(h);
   return name;
 }
 
-async function shareFixture(h) {
+export async function shareFixture(h) {
   if (!(await h.waitFor(async () => (await h.js('A', "state.deliveryReady&&!state.outbox.length&&!state.baseJob&&!state.pendingReplay&&!state.baseHold?'ready':'waiting'")) === 'ready', 30000, 'base source ready'))) throw new Error('base source did not settle');
   const previous = Number(await h.js('A', 'String(state.baseInfo&&state.baseInfo.seq||0)'));
   requireOk(await h.js('A', "shareBase();'ok'"));
@@ -27,7 +28,7 @@ async function shareFixture(h) {
 }
 
 async function set(h, who, name, which, prop, value) {
-  requireOk(await h.jsx(who, body(property(name, which, prop) + '.setValue(' + literal(value) + ')')));
+  requireOk(await h.jsx(who, body("var c=" + comp(name) + ",l=" + layer(name, which) + ";c.openInViewer();for(var i=1;i<=c.numLayers;i++)c.layer(i).selected=c.layer(i)===l;" + property(name, which, prop) + '.setValue(' + literal(value) + ')')));
 }
 
 async function value(h, who, name, which, prop) {

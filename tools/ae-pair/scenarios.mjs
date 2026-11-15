@@ -1,7 +1,7 @@
 // Edit scenarios for the two-instance harness. `jsx` is an ES3 function body
 // run inside After Effects with `comp` (the Main comp), `L(name)` (layer by
 // name) and `vynkPair` in scope. `who` is the instance that makes the edit.
-import { recoveryScenarios } from './recovery-scenarios.mjs';
+import { recoveryScenarios, shareFixture } from './recovery-scenarios.mjs';
 const PRESETS = 'C:/Program Files/Adobe/Adobe After Effects 2025/Support Files/Presets/';
 
 const ids = async (h, who, layer) => JSON.parse(await h.jsx(who, "(function(){var c=vynkPair.comp('Main');var l=vynkPair.layer(c,'" + layer + "');return JSON.stringify([c.id,l?l.id:-1]);})()"));
@@ -92,7 +92,7 @@ export const scenarios = [
   { name: 'layer style: add stroke too', who: 'A', focus: 'B', timeout: 20000, jsx: `L('Red').selected = true; focusViewer(comp); app.executeCommand(9008); L('Red').property('ADBE Layer Styles').property('frameFX/enabled').property('frameFX/size').setValue(12);` },
   { name: 'layer style: hide one', who: 'A', focus: 'B', timeout: 20000, jsx: `L('Red').property('ADBE Layer Styles').property('dropShadow/enabled').enabled = false;` },
   { name: 'layer style: peer edits it', who: 'B', focus: 'A', timeout: 20000, jsx: `L('Red').property('ADBE Layer Styles').property('frameFX/enabled').property('frameFX/size').setValue(3);` },
-  { name: 'layer style: remove all', who: 'A', focus: 'B', timeout: 20000, jsx: `L('Red').selected = true; focusViewer(comp); app.executeCommand(2072);` },
+  { name: 'layer style: remove all', who: 'A', focus: 'B', timeout: 20000, jsx: `var styles=L('Red').property('ADBE Layer Styles');if(!styles.property('dropShadow/enabled').canSetEnabled&&!styles.property('frameFX/enabled').canSetEnabled)throw new Error('no applied layer style to remove');L('Red').selected = true; focusViewer(comp); app.executeCommand(2072);if(styles.property('dropShadow/enabled').canSetEnabled||styles.property('frameFX/enabled').canSetEnabled)throw new Error('layer styles were not removed');` },
   { name: 'add camera', who: 'A', jsx: `var c = comp.layers.addCamera('Cam', [960, 540]);` },
   { name: 'add light', who: 'A', jsx: `comp.layers.addLight('Sun', [960, 540]);` },
   { name: 'burst: 40 edits at once', who: 'A', jsx: `for (var i = 1; i <= comp.numLayers; i++) { var l = comp.layer(i); if (l.locked) continue; var t = l.property('ADBE Transform Group'); try { t.property('ADBE Opacity').setValue(10 + i); t.property('ADBE Rotate Z').setValue(i * 3); t.property('ADBE Anchor Point').setValue(t.property('ADBE Anchor Point').value.length > 2 ? [i, i, 0] : [i, i]); } catch (e) {} }`, timeout: 20000 },
@@ -111,11 +111,11 @@ export const scenarios = [
   // following change is invisible to it: the two projects drift apart silently.
   { name: 'repair: silent drift on one value', who: 'B', select: false, timeout: 60000, before: { who: 'B', js: "(function(){var c=state.shadows[state.lastActiveSid];if(!c)return 'no shadow';for(var i=0;i<c.layers.length;i++){if(c.layers[i].a.name==='Blue'){c.layers[i].p['ADBE Transform Group/ADBE Opacity']={v:5,m:1};return 'ok';}}return 'no layer';})()" }, jsx: `L('Blue').property('ADBE Transform Group').property('ADBE Opacity').setValue(5);` },
   { name: 'repair: peer silently lost a layer, then it is edited', who: 'A', timeout: 60000, before: { who: 'B', js: "(function(){var c=state.shadows[state.lastActiveSid];if(!c)return 'no shadow';for(var i=0;i<c.layers.length;i++){if(c.layers[i].a.name==='Emerald'){c.layers.splice(i,1);cs.evalScript(\"(function(){var c=vynkPair.comp('Main');vynkPair.layer(c,'Emerald').remove();})()\");return 'ok';}}return 'no layer';})()" }, jsx: `L('Emerald').property('ADBE Transform Group').property('ADBE Opacity').setValue(81);` },
-  // B leaves, A keeps working, B comes back as a brand-new session on its now
-  // stale project. Nothing is replayed: self-repair has to bring B up to date.
+  // A checkpoint precedes B's reload, so only the missed edits are replayed.
   {
-    name: 'late joiner catches up with the room', who: 'A', timeout: 90000,
+    name: 'late joiner replays edits after a shared base', who: 'A', timeout: 90000,
     run: async (h) => {
+      await shareFixture(h);
       await h.js('B', "wantConnected = false; disconnect(); 'ok'");
       await h.sleep(1500);
       const edit = "L('Blue').property('ADBE Transform Group').property('ADBE Scale').setValue([44, 44]); comp.layers.addSolid([0.3, 0.3, 0.9], 'WhileAway', 1920, 1080, 1, 10); L('Sun').remove(); app.project.items.addComp('MadeWhileAway', 800, 600, 1, 4, 25)";
@@ -124,6 +124,7 @@ export const scenarios = [
       await h.js('B', "later(function () { location.reload(); }, 50); 'ok'");
       await h.sleep(2500);
       await h.waitFor(() => h.obs.has('B'), 30000, 'B to rejoin');
+      if (!(await h.waitFor(async () => (await h.jsx('B', "(function(){var c=vynkPair.comp('Main');return vynkPair.comp('MadeWhileAway')&&vynkPair.layer(c,'WhileAway')&&!vynkPair.layer(c,'Sun')&&JSON.stringify(vynkPair.layer(c,'Blue').property('ADBE Transform Group').property('ADBE Scale').value)==='[44,44]'?'ready':'waiting';})()")) === 'ready', 45000, 'intended late-join edits'))) return 'ERR late join did not preserve the intended edits';
       return out;
     }
   },

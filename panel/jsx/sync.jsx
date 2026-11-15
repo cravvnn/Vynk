@@ -1349,6 +1349,35 @@ $.global.vynkSync = (function () {
     return JSON.stringify(out);
   }
 
-  return { cycle: cycle, version: 2 };
+  function openBase(destPath, expectedPath, expectedRev) {
+    try {
+      var path = app.project.file ? app.project.file.fsName : '';
+      if (path !== expectedPath || app.project.revision !== expectedRev) return 'project changed';
+      var times = {};
+      var i;
+      var item;
+      for (i = 1; i <= app.project.numItems; i++) {
+        item = app.project.item(i);
+        if (item instanceof CompItem) times[sidOf(item)] = item.time;
+      }
+      var dest = new File(destPath);
+      app.open(dest);
+      if (!app.project.file || app.project.file.fsName !== dest.fsName) return 'cancelled';
+      var viewFails = 0;
+      for (i = 1; i <= app.project.numItems; i++) {
+        item = app.project.item(i);
+        if (!(item instanceof CompItem)) continue;
+        var time = times[sidOf(item)];
+        if (typeof time !== 'number') time = 0;
+        try {
+          item.time = time;
+          if (Math.abs(item.time - time) > 0.000001) viewFails++;
+        } catch (eTime) { viewFails++; }
+      }
+      return JSON.stringify({ opened: true, path: app.project.file.fsName, viewFails: viewFails });
+    } catch (e) { return 'ERR ' + e.toString(); }
+  }
+
+  return { cycle: cycle, openBase: openBase, version: 2 };
 })();
 'vynkSync ' + $.global.vynkSync.version;

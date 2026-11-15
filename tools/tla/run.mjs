@@ -12,6 +12,6 @@ if (!fs.existsSync(path.join(here, 'node_modules', 'tla-ts', 'package.json'))) {
 const args = process.argv.slice(2);
 const lineEndings = spawnSync(process.execPath, [path.join(here, 'test-line-endings.mjs')], { stdio: 'inherit', windowsHide: true });
 if (lineEndings.status !== 0) process.exit(lineEndings.status || 1);
-const result = spawnSync(process.execPath, [path.join(here, 'check.mjs'), ...(args.length ? args : ['panel/src', 'server/src', 'aegp/src', 'tools/ae-pair'])], { stdio: 'inherit' });
+const result = spawnSync(process.execPath, [path.join(here, 'check.mjs'), ...(args.length ? args : ['panel/src', 'panel/jsx', 'server/src', 'aegp/src', 'tools/ae-pair'])], { stdio: 'inherit' });
 if (result.error) throw result.error;
 process.exit(result.status || 0);

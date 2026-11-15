@@ -2,7 +2,7 @@
   'use strict';
 
   var PROTO = 2;
-  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev') + ' m3.5';
+  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev') + ' m3.6';
   var CURSOR_FLUSH_MS = 33;
   var POLL_FAST_MS = 200;
   var POLL_BURST_MS = 2500;
@@ -1426,11 +1426,8 @@
   }
 
   function openBaseScript(info, dest) {
-    return '(function(){try{var path=app.project.file?app.project.file.fsName:"";' +
-      'if(path!==' + JSON.stringify(info.path) + '||app.project.revision!==' + info.rev + ')return "project changed";' +
-      'var dest=new File(' + JSON.stringify(dest) + ');app.open(dest);' +
-      'if(!app.project.file||app.project.file.fsName!==dest.fsName)return "cancelled";' +
-      'return JSON.stringify({opened:true,path:app.project.file.fsName});}catch(e){return "ERR "+e.toString();}})()';
+    return '(typeof vynkSync === "undefined" || typeof vynkSync.openBase !== "function") ? "sync engine unavailable" : vynkSync.openBase(' +
+      JSON.stringify(dest) + ',' + JSON.stringify(info.path) + ',' + info.rev + ')';
   }
 
   function baseOpened(job, result) {
@@ -1439,6 +1436,7 @@
     if (info && info.opened) job.keep = true;
     if (stale() || state.baseJob !== job) { finishBaseJob(job); return; }
     if (!info || !info.opened) { finishBaseJob(job, 'open base: ' + result); return; }
+    if (info.viewFails) log('base opened: ' + info.viewFails + ' local playhead(s) could not be restored');
     state.baseJob = null;
     resetBaselines();
     state.projectPath = info.path;

@@ -10,6 +10,7 @@ import fixture from './panel-test-fixture.cjs';
 const { panelFixture, TestSocket } = fixture;
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex').slice(0, 16);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const hostEngine = fs.readFileSync(new URL('../panel/jsx/sync.jsx', import.meta.url), 'utf8');
 
 function setup(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vynk-base-panel-'));
@@ -20,9 +21,18 @@ function setup(t) {
   File.prototype.copy = function (dest) { fs.copyFileSync(this.fsName, dest); return true; };
   host.file = new File(source);
   host.save = () => { host.saves++; fs.writeFileSync(host.file.fsName, host.body); };
-  const app = { project: host, open(file) { host.opens.push(file.fsName); host.file = file; host.revision++; } };
+  function CompItem(id, time, comment = '') { this.id = id; this.time = time; this.comment = comment; }
+  host.items = [];
+  Object.defineProperty(host, 'numItems', { get: () => host.items.length });
+  host.item = (i) => host.items[i - 1];
+  const app = { project: host, open(file) { host.opens.push(file.fsName); host.file = file; host.revision++; host.items = host.nextItems || []; } };
   const scripts = [];
-  const runScript = (script) => vm.runInNewContext(script, { app, File, JSON });
+  const engineGlobal = {};
+  const hostContext = vm.createContext({ app, File, JSON, CompItem, $: { global: engineGlobal },
+    PropertyType: { PROPERTY: 1, INDEXED_GROUP: 2 }, PropertyValueType: {} });
+  vm.runInContext(hostEngine, hostContext);
+  hostContext.vynkSync = engineGlobal.vynkSync;
+  const runScript = (script) => vm.runInContext(script, hostContext);
   TestSocket.sockets = [];
   const panel = panelFixture({ WebSocket: TestSocket, processInfo: { env: { ...process.env, TEMP: dir } } });
   panel.get('serverInput').value = 'ws://127.0.0.1:8787/ws';
@@ -52,7 +62,7 @@ function setup(t) {
   };
   const baseBytes = Buffer.from('base at sequence zero');
   const base = { name: 'base.aep', seq: 0, hash: hash(baseBytes), size: baseBytes.length };
-  return { panel, host, dir, source, scripts, runScript, readyShare, oldSocket, base, baseBytes };
+  return { panel, host, dir, source, scripts, runScript, readyShare, oldSocket, base, baseBytes, CompItem };
 }
 
 test('share saves and uploads an immutable copy at the captured relay prefix', async (t) => {
@@ -154,6 +164,32 @@ test('reopening a base requests fresh history on the actual original session', (
   assert.deepEqual(fs.readFileSync(host.file.fsName), baseBytes);
 });
 
+test('base open keeps local comp times by SID and starts new comps at zero', (t) => {
+  const { panel, host, base, baseBytes, CompItem } = setup(t);
+  host.items = [new CompItem(10, 4), new CompItem(20, 2, '#c:aaaaaaaaaaaa')];
+  host.nextItems = [new CompItem(90, 1, '#c:aaaaaaaaaaaa'), new CompItem(10, 1), new CompItem(30, 5)];
+  panel.state.baseInfo = base;
+  panel.set('__download', (url, file, cb) => { fs.writeFileSync(file, baseBytes); cb(null, base.hash); });
+  panel.run('httpGetToFile=__download;getBase()');
+  assert.deepEqual(host.items.map((c) => c.time), [2, 4, 0]);
+  assert.equal(host.opens.length, 1);
+});
+
+test('a failed local time restore still retains the project that was opened', (t) => {
+  const { panel, host, base, baseBytes, CompItem } = setup(t);
+  host.items = [new CompItem(10, 4)];
+  const reopened = new CompItem(10, 1);
+  Object.defineProperty(reopened, 'time', { get: () => 1, set() { throw new Error('time unavailable'); } });
+  host.nextItems = [reopened];
+  panel.state.baseInfo = base;
+  panel.set('__download', (url, file, cb) => { fs.writeFileSync(file, baseBytes); cb(null, base.hash); });
+  panel.run('httpGetToFile=__download;getBase()');
+  assert.equal(host.opens.length, 1);
+  assert.equal(panel.state.projectPath, host.file.fsName);
+  assert(panel.state.expectedBase);
+  assert(fs.existsSync(host.file.fsName));
+});
+
 test('a base change before fresh welcome holds applies until the latest base is opened', (t) => {
   const { panel, host, base, baseBytes, scripts } = setup(t);
   panel.state.baseInfo = base;
@@ -182,7 +218,7 @@ test('a new base announcement preserves a posted open until its fresh-welcome ch
   Object.assign(panel.state, { baseInfo: base, pendingReplay: [{ seq: 1, op: { opId: 'held', kind: 'remove', target: { comp: 'id1|Main', layer: 'id2' } } }] });
   let pending;
   panel.set('__host', (script, cb) => {
-    if (script.includes('app.open(dest)')) pending = () => cb(runScript(script));
+    if (script.includes('vynkSync.openBase')) pending = () => cb(runScript(script));
     else cb(runScript(script));
   });
   panel.set('__download', (url, file, cb) => { fs.writeFileSync(file, baseBytes); cb(null, base.hash); });
@@ -238,7 +274,7 @@ test('a dropped socket during a posted open still rebuilds the new project safel
   panel.state.baseInfo = base;
   let pending;
   panel.set('__host', (script, cb) => {
-    if (script.includes('app.open(dest)')) pending = () => cb(runScript(script));
+    if (script.includes('vynkSync.openBase')) pending = () => cb(runScript(script));
     else cb(runScript(script));
   });
   panel.set('__download', (url, file, cb) => { fs.writeFileSync(file, baseBytes); cb(null, base.hash); });

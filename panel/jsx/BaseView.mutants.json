@@ -1,0 +1,5 @@
+[
+  { "name": "load the provider's saved playheads", "replace": [["IF ~PreserveLocal THEN Provider[i]", "IF TRUE THEN Provider[i]"]], "expect": "LocalTimesKept" },
+  { "name": "restore playheads by item index instead of SID", "replace": [["IF MatchIdentity THEN i", "IF FALSE THEN i"]], "expect": "LocalTimesKept" },
+  { "name": "copy a playhead into a new local comp", "replace": [["IF ClearNew THEN 0", "IF FALSE THEN 0"]], "expect": "NewCompStartsLocally" }
+]

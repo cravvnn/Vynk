@@ -296,6 +296,13 @@ async function main() {
     return stopped ? 0 : 3;
   }
 
+  const only = opt('--only');
+  const list = only ? scenarios.filter((s) => s.name.includes(only)) : scenarios;
+  if (list.length === 0) {
+    say('no scenarios match --only ' + JSON.stringify(only));
+    return 2;
+  }
+
   const attach = flag('--attach');
   const room = 'PAIR' + Math.random().toString(36).slice(2, 6).toUpperCase().replace(/[^A-Z0-9]/g, 'X');
   const projA = path.join(WORK, 'a', 'pair.aep');
@@ -403,8 +410,6 @@ async function main() {
     say(`baseline: ${outstanding.size} differing key(s) before any edit`);
     for (const [k, v] of [...outstanding].slice(0, 6)) say(`   ${k}: A=${v[0]} B=${v[1]}`);
 
-    const only = opt('--only');
-    const list = only ? scenarios.filter((s) => s.name.includes(only)) : scenarios;
     const results = [];
     for (const sc of list) {
       const t0 = Date.now();

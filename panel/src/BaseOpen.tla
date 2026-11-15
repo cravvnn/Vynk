@@ -6,6 +6,8 @@
 \* The host checks file/revision atomically with open; Requests covers callbacks
 \* before dispatch. This model does not assert cancellation after app.open starts,
 \* or model manual panel reload during a native call, AE modal dialogs or I/O.
+\* NativeOpen calls sync.jsx openBase atomically; BaseView.tla covers its local
+\* playhead capture/restore contract. No playhead position enters relay ops.
 EXTENDS Naturals
 CONSTANTS RevisionGuard, FileGuard, ResetSeen, BindBase, CriticalBarrier, KeepPostedJob
 VARIABLES phase, context, revision, file, guardRevision, guardFile, seen,
