@@ -13,14 +13,13 @@
     "smoke": "node server/scripts/smoke.mjs",
     "test": "node tools/test-sync.mjs && node tools/test-jsonpoly.mjs",
     "test:pair": "node tools/ae-pair/run.mjs",
-    "test:base": "node tools/test-base-http.mjs && node tools/test-replay-limit.mjs && node tools/test-claims.mjs",
+    "test:base": "node tools/test-base-http.mjs && node tools/test-replay-limit.mjs",
     "deploy:probe": "node tools/deploy-probe.mjs",
     "soak:system": "node tools/soak-system.mjs",
     "install-panel": "powershell -ExecutionPolicy Bypass -File tools/dev-install.ps1",
     "set-version": "node tools/set-version.mjs",
     "package": "node tools/package.mjs",
-    "publish": "node tools/publish.mjs",
-    "verify:ae": "node tools/ae-verify.mjs"
+    "publish": "node tools/publish.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

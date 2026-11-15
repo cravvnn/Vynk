@@ -57,6 +57,10 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
 
 ### Removed
 
+- The v1 reader/applier in `hostscript.jsx` (it now only installs the JSON polyfill and
+  reports host details), the headless v1 apply harness (`npm run verify:ae`),
+  `tools/probe-op.mjs`, and the relay's per-property claims (`CLAIM_TTL_MS`,
+  `tools/test-claims.mjs`) - conflicts now resolve in relay order on the clients.
 - The v1 diff engine (`panel/src/diff.js`), its tests and fuzzer, per-surface polling
   (effects/text/shapes), the structure circuit breaker and the divergence hold, which
   stopped all structure sync after a single missed op.

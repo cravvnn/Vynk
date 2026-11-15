@@ -30,7 +30,6 @@ export interface OpTarget {
 //   iadd/irm/iset  project items (comps, folders)
 //   batch    value.ops = EditOp[], applied atomically
 //   need     self-repair request: value.to = peer id, value.layers = { sid: fingerprint } | null
-// The kinds after 'batch' are protocol 1 and only kept for the relay's claim code.
 export type OpKind =
   | 'attr'
   | 'prop'
@@ -43,27 +42,9 @@ export type OpKind =
   | 'iset'
   | 'batch'
   | 'need'
-  | 'set'
   | 'add'
   | 'remove'
-  | 'reorder'
-  | 'rename'
-  | 'addKey'
-  | 'setKey'
-  | 'removeKey'
-  | 'addEffect'
-  | 'removeEffect'
-  | 'setEffect'
-  | 'setExpr'
-  | 'addMask'
-  | 'removeMask'
-  | 'setComp'
-  | 'setShape';
-
-export interface KeyframeEaseSpec {
-  in: number[][];
-  out: number[][];
-}
+  | 'reorder';
 
 export interface EditOp {
   opId: string;
@@ -71,12 +52,7 @@ export interface EditOp {
   target: OpTarget;
   path?: string;
   value?: unknown;
-  time?: number;
-  interp?: { inType: number; outType: number };
-  ease?: KeyframeEaseSpec;
-  spatial?: { in: number[]; out: number[] };
   index?: number;
-  minAe?: AeVersion;
 }
 
 export interface LoggedOp {
@@ -132,7 +108,7 @@ export type S2C =
   | { t: 'op'; seq: number; author: string; ts: number; op: EditOp }
   | { t: 'lock'; target: string; owner: string | null }
   | { t: 'log'; id: string; name: string; line: string }
-  | { t: 'error'; code: string; message: string; target?: string; owner?: string; op?: LoggedOp | null }
+  | { t: 'error'; code: string; message: string }
   | { t: 'pong'; ts: number };
 
 export function parseC2S(raw: string): C2S | null {

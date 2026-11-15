@@ -37,7 +37,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           node tools/check-es3.mjs
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          node tools/check-es3.mjs tools/ae-headless/verify.jsx
+          node tools/check-es3.mjs panel/jsx/sync.jsx
           Copy-Item panel/jsx/sync.jsx "$env:TEMP/sync.js" -Force
           node --check "$env:TEMP/sync.js"
           if ($LASTEXITCODE -ne 0) { exit 1 }

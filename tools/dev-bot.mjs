@@ -35,33 +35,14 @@ setTimeout(() => {
 let opCount = 0;
 setInterval(() => {
   opCount++;
-  const op =
-    opCount % 4 === 0
-      ? {
-          opId: 'op-' + opCount,
-          kind: 'setKey',
-          target: { comp: '123|Main Comp', layer: 'id42' },
-          path: 'transform.position',
-          value: [200 + opCount, 300],
-          time: 1.0,
-          interp: { inType: 1, outType: 1 },
-        }
-      : opCount % 3 === 0
-        ? {
-            opId: 'op-' + opCount,
-            kind: 'addKey',
-            target: { comp: '123|Main Comp', layer: 'id42' },
-            path: 'transform.position',
-            value: [100 + opCount, 250],
-            time: 2.0,
-            interp: { inType: 1, outType: 1 },
-          }
-        : {
-            opId: 'op-' + opCount,
-            kind: 'set',
-            target: { comp: '123|Main Comp', layer: 'id42' },
-            path: 'transform.opacity',
-            value: 40 + (opCount % 60),
-          };
+  // A protocol 2 op for a layer that does not exist: real panels report
+  // "layer not found" and are otherwise unaffected.
+  const op = {
+    opId: 'op-' + opCount,
+    kind: 'prop',
+    target: { comp: 'id123|Main Comp', layer: 'id42' },
+    path: 'ADBE Transform Group/ADBE Opacity',
+    value: { v: 40 + (opCount % 60), m: 1 }
+  };
   ws.send(JSON.stringify({ t: 'op', op }));
 }, 1500);
