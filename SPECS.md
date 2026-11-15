@@ -66,6 +66,14 @@ queue caused a rate-limit reconnect; the same test now drains without reconnecti
 Private-relay regressions also cover a lost echo across relay restart, failed disk
 append, last-peer shutdown while appends drain, and receipts older than 5,000 ops.
 
+The scalar stress producer waits for a reloaded frontend's first room welcome,
+matching the real host-diff precondition. All incoming frames now have a 100 ms
+FIFO delay. The old producer falsely counted edits before that first welcome;
+with the delay it recorded only 114 of 120 intents. The corrected producer
+preserves all 120 while still dropping frames/echoes, reloading and restarting.
+This is test scheduling over Session/Delivery's existing welcome contract, with
+no new product state.
+
 Base baseline: the upload-end checkpoint skipped a committed edit made while
 older captured bytes were still uploading. Reopening a base retained old seen IDs
 and requested no fresh history. The candidate saves/copies under a same-file and

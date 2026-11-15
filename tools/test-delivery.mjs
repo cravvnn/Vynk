@@ -101,7 +101,8 @@ async function relayFixture(t) {
             this.socket.terminate();
             return;
           }
-          if (this.onmessage) this.onmessage({ data });
+          if (loss.deliveryDelayMs) setTimeout(() => { if (this.onmessage) this.onmessage({ data }); }, loss.deliveryDelayMs);
+          else if (this.onmessage) this.onmessage({ data });
         });
       }
       get readyState() { return this.socket.readyState; }
@@ -382,7 +383,7 @@ test('four panel clients preserve scalar intents through mixed loss, reload, res
   const issued = new Set();
   let drops = 0;
   const make = (id, storage = new Map(), values = new Map()) => {
-    const loss = {};
+    const loss = { deliveryDelayMs: 100 };
     const panel = relay.panel('VALUES1', storage, loss);
     const project = 'C:/private-client-' + id + '/base.aep';
     panel.state.projectPath = project;
@@ -432,6 +433,8 @@ test('four panel clients preserve scalar intents through mixed loss, reload, res
   for (let i = 0; i < rounds; i++) {
     const index = i % clients.length;
     let client = clients[index];
+    // A new frontend cannot emit host diffs before its first room welcome.
+    if (!client.panel.state.everConnected) await until(() => { pump(); return client.panel.state.everConnected; }, 'reloaded scalar client first welcome');
     const op = { ...edit('intent-' + i), kind: 'prop', target: { comp: 'id1|Main', layer: 'id' + (10 + i % 7) },
       path: 'ADBE Transform Group/ADBE Opacity', value: { v: (i * 37) % 97 + 1 } };
     issued.add(op.opId);
@@ -468,7 +471,7 @@ test('four panel clients preserve scalar intents through mixed loss, reload, res
   for (const entry of log) expected.set(key(entry.op), entry.op.value.v);
   for (const client of clients) assert.deepEqual(client.values, expected, 'client ' + client.id + ' must hold the last relay value for every target');
   assert(drops >= 8, 'the fault schedules must actually drop frames and echoes');
-  t.diagnostic(issued.size + ' intended scalar edits, ' + drops + ' dropped frames/echoes, ' + Math.floor((rounds + 11) / 23) + ' reloads, one relay restart and one advanced base; four simulated scalar hosts match relay order');
+  t.diagnostic(issued.size + ' intended scalar edits, ' + drops + ' dropped frames/echoes, ' + Math.floor((rounds + 11) / 23) + ' reloads, one relay restart and one advanced base; 100ms incoming delay; four simulated scalar hosts match relay order');
 });
 
 function baseRequest(relay, token, seq, bytes) {
