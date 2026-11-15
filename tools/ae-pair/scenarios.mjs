@@ -92,7 +92,7 @@ export const scenarios = [
   { name: 'layer style: add stroke too', who: 'A', focus: 'B', timeout: 20000, jsx: `L('Red').selected = true; focusViewer(comp); app.executeCommand(9008); L('Red').property('ADBE Layer Styles').property('frameFX/enabled').property('frameFX/size').setValue(12);` },
   { name: 'layer style: hide one', who: 'A', focus: 'B', timeout: 20000, jsx: `L('Red').property('ADBE Layer Styles').property('dropShadow/enabled').enabled = false;` },
   { name: 'layer style: peer edits it', who: 'B', focus: 'A', timeout: 20000, jsx: `L('Red').property('ADBE Layer Styles').property('frameFX/enabled').property('frameFX/size').setValue(3);` },
-  { name: 'layer style: remove all', who: 'A', focus: 'B', timeout: 20000, jsx: `var styles=L('Red').property('ADBE Layer Styles');if(!styles.property('dropShadow/enabled').canSetEnabled&&!styles.property('frameFX/enabled').canSetEnabled)throw new Error('no applied layer style to remove');L('Red').selected = true; focusViewer(comp); app.executeCommand(2072);if(styles.property('dropShadow/enabled').canSetEnabled||styles.property('frameFX/enabled').canSetEnabled)throw new Error('layer styles were not removed');` },
+  { name: 'layer style: remove all', who: 'A', focus: 'B', timeout: 20000, jsx: `var styles=L('Red').property('ADBE Layer Styles');if(!styles.property('dropShadow/enabled').canSetEnabled&&!styles.property('frameFX/enabled').canSetEnabled)throw new Error('no applied layer style to remove');L('Red').selected = true; focusViewer(comp); app.executeCommand(3744);styles=L('Red').property('ADBE Layer Styles');if(styles.property('dropShadow/enabled').canSetEnabled||styles.property('frameFX/enabled').canSetEnabled)throw new Error('layer styles were not removed');` },
   { name: 'add camera', who: 'A', jsx: `var c = comp.layers.addCamera('Cam', [960, 540]);` },
   { name: 'add light', who: 'A', jsx: `comp.layers.addLight('Sun', [960, 540]);` },
   { name: 'burst: 40 edits at once', who: 'A', jsx: `for (var i = 1; i <= comp.numLayers; i++) { var l = comp.layer(i); if (l.locked) continue; var t = l.property('ADBE Transform Group'); try { t.property('ADBE Opacity').setValue(10 + i); t.property('ADBE Rotate Z').setValue(i * 3); t.property('ADBE Anchor Point').setValue(t.property('ADBE Anchor Point').value.length > 2 ? [i, i, 0] : [i, i]); } catch (e) {} }`, timeout: 20000 },
@@ -131,9 +131,18 @@ export const scenarios = [
   },
   // ---- Repair of comps nobody has open (B joined last, so A is the reference)
   {
-    name: 'background comp: silent drift is repaired', who: 'B', timeout: 90000,
-    before: { who: 'B', js: "(function(){var c=null;for(var k in state.shadows){if(state.shadows[k].id.split('|')[1]==='Other')c=state.shadows[k];}if(!c)return 'no shadow for Other';for(var i=0;i<c.layers.length;i++){if(c.layers[i].a.name==='Inner'){c.layers[i].p['ADBE Transform Group/ADBE Opacity']={v:12,m:1};cs.evalScript(\"vynkPair.layer(vynkPair.comp('Other'),'Inner').property('ADBE Transform Group').property('ADBE Opacity').setValue(12)\");return 'ok';}}return 'no layer Inner';})()" },
-    jsx: `var unused = 1;`
+    name: 'background comp: silent drift is repaired', who: 'B', timeout: 90000, allowUnchanged: true,
+    run: async (h) => {
+      const read = "JSON.stringify(vynkPair.layer(vynkPair.comp('Other'),'Inner').property('ADBE Transform Group').property('ADBE Opacity').value)";
+      const expected = await h.jsx('A', read);
+      const drift = expected === '12' ? 23 : 12;
+      const edit = "(function(){try{vynkPair.layer(vynkPair.comp('Other'),'Inner').property('ADBE Transform Group').property('ADBE Opacity').setValue(" + drift + ");return 'changed';}catch(e){return 'ERR '+e;}})()";
+      const prepared = await h.js('B', "(function(){var c=null;for(var k in state.shadows){if(state.shadows[k].id.split('|')[1]==='Other')c=state.shadows[k];}if(!c)return 'no shadow for Other';for(var i=0;i<c.layers.length;i++){if(c.layers[i].a.name==='Inner'){c.layers[i].p['ADBE Transform Group/ADBE Opacity']={v:" + drift + ",m:1};window.__repairDrift=null;cs.evalScript(" + JSON.stringify(edit) + ",function(result){window.__repairDrift=result;});return 'ok';}}return 'no layer Inner';})()");
+      if (prepared !== 'ok') return 'ERR ' + prepared;
+      if (!(await h.waitFor(async () => (await h.js('B', 'window.__repairDrift')) === 'changed', 30000, 'background drift injected'))) return 'ERR background drift was not injected';
+      if (!(await h.waitFor(async () => (await h.jsx('A', read)) === expected && (await h.jsx('B', read)) === expected, 60000, 'intended background repair'))) return 'ERR background value did not return to the reference';
+      return 'ok';
+    }
   },
   {
     name: 'background comp: lost layer, then edited', who: 'A', timeout: 90000,
@@ -144,7 +153,7 @@ export const scenarios = [
     name: 'layer style in a comp the peer does not have open', who: 'A', timeout: 90000,
     run: async (h) => {
       h.focus('A');
-      const out = await h.jsx('A', "(function(){try{var o=vynkPair.comp('Other');o.openInViewer();try{app.activeViewer.setActive();}catch(ev){}var l=vynkPair.layer(o,'Inner');for(var i=1;i<=o.numLayers;i++)o.layer(i).selected=(o.layer(i)===l);app.executeCommand(9006);return 'ok';}catch(e){return 'ERR '+e;}})()");
+      const out = await h.jsx('A', "(function(){try{var o=vynkPair.comp('Other');o.openInViewer();try{app.activeViewer.setActive();}catch(ev){}var l=vynkPair.layer(o,'Inner');for(var i=1;i<=o.numLayers;i++)o.layer(i).selected=(o.layer(i)===l);app.executeCommand(3739);app.executeCommand(9006);return 'ok';}catch(e){return 'ERR '+e;}})()");
       await h.sleep(6000);
       await h.jsx('B', "(function(){vynkPair.comp('Other').openInViewer();return 'ok';})()");
       h.focus('B');

@@ -5,7 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
-const PORT = Number(process.argv[2] ?? 8797);
+const PORT = Number(process.argv[2] ?? 8801);
 const BASE = `http://127.0.0.1:${PORT}`;
 let pass = 0, fail = 0;
 const ok = (l, c) => { console.log((c ? 'ok: ' : 'FAIL: ') + l); c ? pass++ : fail++; };

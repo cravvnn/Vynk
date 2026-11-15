@@ -1,0 +1,5 @@
+[
+  { "name": "forget the observed comp on a repeated item announcement", "replace": [["IF PreserveComp THEN baseline ELSE FALSE", "FALSE"]], "expect": "LocalEditAnnounced" },
+  { "name": "defer the initial remote comp read past a local edit", "replace": [["baseline' = ReadCreated", "baseline' = FALSE"]], "expect": "LocalEditAnnounced" },
+  { "name": "delete an unmatched peer-only layer during repair", "replace": [["removed' = ~KeepPeer", "removed' = TRUE"], ["hostLayer' = KeepPeer", "hostLayer' = FALSE"]], "expect": "RepairPreservesPeerLayer" }
+]

@@ -1,0 +1,3 @@
+[
+  { "name": "return before adding order and composition metadata", "replace": [["reply' = ReplyMetadata", "reply' = FALSE"]], "expect": "FullRepairConverges" }
+]

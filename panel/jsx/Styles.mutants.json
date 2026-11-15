@@ -1,0 +1,4 @@
+[
+  { "name": "accept a removal although unwanted styles remain", "replace": [["(~CheckExact \\/ ~(ignored \\/ ~registered))", "TRUE"]], "expect": "AcknowledgedExactSet" },
+  { "name": "skip lazy style command registration", "replace": [["registered' = WarmMenu", "registered' = FALSE"]], "expect": "SupportedMenuAcknowledged" }
+]

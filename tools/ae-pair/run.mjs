@@ -5,6 +5,7 @@
 //   node tools/ae-pair/run.mjs                 # launch both, run, quit both
 //   node tools/ae-pair/run.mjs --keep          # leave both instances running
 //   node tools/ae-pair/run.mjs --attach        # reuse instances left by --keep
+//   node tools/ae-pair/run.mjs --attach --fresh # rebuild their disposable baseline
 //   node tools/ae-pair/run.mjs --only "add"    # scenarios whose name matches
 //   node tools/ae-pair/run.mjs --stop          # quit instances left by --keep
 //
@@ -114,7 +115,7 @@ async function native(who, verb, args) {
 function wrap(body, select) {
   return (
     "(function(){try{var comp=vynkPair.comp('Main');" +
-    "var focusViewer=function(c){c.openInViewer();try{app.activeViewer.setActive();}catch(ef){}};" +
+    "var focusViewer=function(c){c.openInViewer();try{app.activeViewer.setActive();}catch(ef){}app.executeCommand(3739);};" +
     "var L=function(n){var l=vynkPair.layer(comp,n);if(!l)throw new Error('no layer '+n);" +
     (select === false ? '' : "for(var q=1;q<=comp.numLayers;q++){try{comp.layer(q).selected=(comp.layer(q)===l);}catch(eq){}}") +
     "return l;};" +
@@ -149,6 +150,8 @@ function setupA(projPath) {
   return [
     'app.beginSuppressDialogs();',
     'try {',
+    `  if(app.project&&app.project.numItems>0&&(!app.project.file||app.project.file.fsName.replace(/\\\\/g,'/').toLowerCase()!==${JSON.stringify(fwd(projPath).toLowerCase())}))throw new Error('not the disposable test project');`,
+    '  if (app.project) app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);',
     '  app.newProject();',
     "  var comp = app.project.items.addComp('Main', 1920, 1080, 1, 10, 30);",
     "  var other = app.project.items.addComp('Other', 1920, 1080, 1, 10, 30);",
@@ -374,9 +377,15 @@ async function main() {
       await sleep(8000);
     }
 
-    if (!attach || !fs.existsSync(projA)) {
+    if (!attach || !fs.existsSync(projA) || flag('--fresh')) {
+      if (attach) {
+        const expected = fwd(projB).toLowerCase();
+        const closed = await jsx('B', "(function(){var p=app.project;if(p&&p.numItems>0&&(!p.file||p.file.fsName.replace(/\\\\/g,'/').toLowerCase()!==" + JSON.stringify(expected) + "))return 'unrelated project';if(p)p.close(CloseOptions.DO_NOT_SAVE_CHANGES);return 'closed';})()");
+        if (closed !== 'closed') { say('--fresh refused: B has ' + closed); return 4; }
+      }
+      const previousSave = fs.existsSync(projA) ? fs.statSync(projA).mtimeMs : 0;
       await runScript('A', writeSetup(path.join(WORK, 'setupA.jsx'), setupA(projA)));
-      if (!(await waitFor(() => fs.existsSync(projA) && fs.statSync(projA).size > 0, 120000, 'A to save the base project'))) return 3;
+      if (!(await waitFor(() => fs.existsSync(projA) && fs.statSync(projA).size > 0 && fs.statSync(projA).mtimeMs > previousSave, 120000, 'A to save the base project'))) return 3;
       await sleep(1500);
       fs.copyFileSync(projA, projB);
       say('base project saved');

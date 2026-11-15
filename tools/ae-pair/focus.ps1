@@ -47,10 +47,15 @@ if ($aeWindow -eq [IntPtr]::Zero) { Write-Output "no AE window"; exit 1 }
 if ([VynkFocus]::IsIconic($aeWindow)) { [void][VynkFocus]::ShowWindow($aeWindow, 9) }
 # Windows only lets the foreground app hand focus over; a synthetic Alt press
 # lifts that restriction for this call.
-[VynkFocus]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
-[void][VynkFocus]::SetForegroundWindow($aeWindow)
-[VynkFocus]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
-Start-Sleep -Milliseconds 300
 [uint32]$foregroundProcess = 0
-[void][VynkFocus]::GetWindowThreadProcessId([VynkFocus]::GetForegroundWindow(), [ref]$foregroundProcess)
-if ($foregroundProcess -eq [uint32]$p.Id) { Write-Output "focused" } else { Write-Output "not focused"; exit 1 }
+for ($attempt = 0; $attempt -lt 3; $attempt++) {
+  [VynkFocus]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 50
+  [void][VynkFocus]::SetForegroundWindow($aeWindow)
+  [VynkFocus]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 200
+  [void][VynkFocus]::GetWindowThreadProcessId([VynkFocus]::GetForegroundWindow(), [ref]$foregroundProcess)
+  if ($foregroundProcess -eq [uint32]$p.Id) { Write-Output "focused"; exit 0 }
+}
+Write-Output "not focused (expected $($p.Id), foreground $foregroundProcess)"
+exit 1

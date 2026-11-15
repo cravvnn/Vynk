@@ -36,7 +36,8 @@ $.global.vynkSync = (function () {
     'gradientFill/enabled': 9007,
     'frameFX/enabled': 9008
   };
-  var CMD_REMOVE_STYLES = 2072;
+  var CMD_REMOVE_STYLES = 3744;
+  var CMD_SHOW_STYLES = 3739;
   var NEEDS_VIEWER = 'needs the comp open';
   var focusedNow = true;
 
@@ -526,6 +527,8 @@ $.global.vynkSync = (function () {
     // comp is already the active one, so this does not change what is shown).
     try { comp.openInViewer(); } catch (eV) {}
     try { if (app.activeViewer) app.activeViewer.setActive(); } catch (eA) {}
+    // Beta registers its style commands lazily when this group is shown.
+    app.executeCommand(CMD_SHOW_STYLES);
     if (extra) {
       app.executeCommand(CMD_REMOVE_STYLES);
       missing = want.slice(0);
@@ -536,6 +539,9 @@ $.global.vynkSync = (function () {
       // The Layer Styles menu sometimes ignores a script right after the viewer
       // changed; the panel keeps it parked and tries again on the next read.
       if (!hasItem(now, want[i])) return NEEDS_VIEWER;
+    }
+    for (i = 0; i < now.length; i++) {
+      if (!hasItem(want, now[i])) return NEEDS_VIEWER;
     }
     return '';
   }

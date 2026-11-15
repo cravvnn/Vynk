@@ -2,7 +2,7 @@
   'use strict';
 
   var PROTO = 2;
-  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev') + ' m3.6';
+  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev') + ' m3.9';
   var CURSOR_FLUSH_MS = 33;
   var POLL_FAST_MS = 200;
   var POLL_BURST_MS = 2500;
@@ -160,7 +160,6 @@
     trailOn: false,
     trailAt: 0,
     selfJoinedAt: 1,
-    agreed: {},
     wantItems: false,
     awaiting: {},
     repairAsked: {},
@@ -1786,7 +1785,6 @@
     state.needSent = {};
     state.lastSumSig = '';
     state.resend = { '*': 1 };
-    state.agreed = {};
     state.deepQueue = {};
     state.fullNext = {};
     state.sweepLayer = 0;
@@ -2040,7 +2038,8 @@
       return by[compSid];
     }
     for (i = 0; i < ops.length; i++) {
-      var e = entry(Sync.sidPart(ops[i].target.comp), false);
+      var createdComp = ops[i].kind === 'iadd' && ops[i].value && ops[i].value.type === 'comp';
+      var e = entry(Sync.sidPart(ops[i].target.comp), createdComp);
       if (ops[i].target.layer) e.deep[ops[i].target.layer] = 1;
     }
     // Anything queued must be read even if the project has not changed since.
@@ -2562,12 +2561,6 @@
       state.shadowItems = items;
     } else {
       Sync.adoptItems(state.shadowItems, items, applied);
-      for (i = 0; i < applied.length; i++) {
-        // A comp a teammate just created: adopt it as it stands after creation.
-        if (applied[i].kind === 'iadd' && applied[i].value && applied[i].value.type === 'comp' && !out.r[i]) {
-          delete state.shadows[applied[i].value.sid];
-        }
-      }
       var freshItems = Sync.unstampedItems(state.shadowItems, items);
       if (freshItems.length > 0) {
         for (i = 0; i < freshItems.length; i++) stamp.items.push([freshItems[i], randomHex(12)]);
@@ -2730,7 +2723,7 @@
   }
 
   function sendNeed(compId, to, layers, full) {
-    send({ t: 'op', op: { opId: randomHex(12), kind: 'need', target: { comp: compId }, value: { to: to, layers: layers, full: full ? 1 : 0, fresh: full && !state.agreed[Sync.sidPart(compId)] ? 1 : 0 } } });
+    send({ t: 'op', op: { opId: randomHex(12), kind: 'need', target: { comp: compId }, value: { to: to, layers: layers, full: full ? 1 : 0 } } });
   }
 
   // A teammate's edit failed here because something it refers to is missing.
@@ -2805,12 +2798,6 @@
     var missing = null;
     for (var sid in theirs) {
       if (have[sid] || theirs[sid] === '') continue;
-      if (op.value.fresh) {
-        // They have never matched this comp since joining, so a layer the
-        // room does not have is one that was deleted before they arrived.
-        ops.push({ opId: randomHex(12), kind: 'remove', target: { comp: shadow.id, layer: sid } });
-        continue;
-      }
       var askKey = compSid + '|' + sid;
       var asked = state.repairAsked[askKey] || [];
       while (asked.length > 0 && now - asked[0] > REPAIR_WINDOW_MS) asked.shift();
@@ -2821,13 +2808,13 @@
       missing[sid] = '';
     }
     if (missing) sendNeed(shadow.id, need.author, missing);
-    if (ops.length === 0) return true;
     if (theirs && op.value.full) {
       for (i = 0; i < shadow.layers.length; i++) {
         ops.push({ opId: randomHex(12), kind: 'reorder', target: { comp: shadow.id, layer: shadow.layers[i].sid }, value: { after: i > 0 ? shadow.layers[i - 1].sid : '' } });
       }
     }
     if (!theirs || op.value.full) for (var field in shadow.s) ops.push({ opId: randomHex(12), kind: 'comp', target: { comp: shadow.id }, path: field, value: shadow.s[field] });
+    if (ops.length === 0) return true;
     log('repair: sending ' + ops.length + ' op(s) to bring a teammate back in step');
     sendOps(ops);
     return true;
@@ -2873,7 +2860,6 @@
       var shadow = state.shadows[compSid];
       var mine = Sync.digest(shadow);
       if (mine.hash === refHash) {
-        state.agreed[compSid] = 1;
         delete state.mismatchAt[compSid];
         continue;
       }
@@ -2939,7 +2925,6 @@
         referenceHash = m.compHash;
       }
     }
-    if (reference === state.selfId || referenceHash === mine.hash) state.agreed[state.compSid] = 1;
     if (!differs || reference === state.selfId || referenceHash === mine.hash) return;
     if (quietFor() < REPAIR_QUIET_MS) return;
     var pair = reference + ':' + referenceHash + ':' + mine.hash;
