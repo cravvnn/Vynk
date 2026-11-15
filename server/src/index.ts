@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { appendFile, mkdir, readFile, readdir, stat, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, stat, rm, writeFile, rename, unlink } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
@@ -16,6 +16,7 @@ import {
   type MemberInfo,
   type S2C,
 } from '@vynk/protocol';
+import { findReceipts, mergeReceipts, pendingIds } from './recovery.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 8787);
@@ -46,6 +47,10 @@ interface Peer {
   msgCount: number;
   windowStart: number;
   alive: boolean;
+  joining: boolean;
+  closed: boolean;
+  pendingIds: Set<string>;
+  receipts: Map<string, LoggedOp>;
 }
 
 interface Room {
@@ -54,9 +59,7 @@ interface Room {
   // .aep over HTTP (keeps the base URL from being guessable from the room code).
   token: string;
   base: BaseInfo | null;
-  // Op-log sequence at the moment the current base was uploaded. Late joiners
-  // only need the ops after this point (the base already contains everything
-  // before it), so `welcome.ops` is filtered to seq > baseSeq.
+  // The snapshot's captured prefix; edits during upload still need replay.
   baseSeq: number;
   lastBasePut: number;
   peers: Map<string, Peer>;
@@ -65,6 +68,9 @@ interface Room {
   log: LoggedOp[];
   flushTimer: NodeJS.Timeout | null;
   writeChain: Promise<void>;
+  writeFailed: boolean;
+  reservations: number;
+  baseUploading: boolean;
 }
 
 const rooms = new Map<string, Room>();
@@ -120,6 +126,19 @@ function publicInfo(peer: Peer): MemberInfo {
   return out;
 }
 
+function parseLog(text: string): LoggedOp[] {
+  if (text && !text.endsWith('\n')) throw new Error('incomplete room log tail');
+  const ops: LoggedOp[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    const entry = JSON.parse(line) as LoggedOp;
+    if (!entry || !Number.isSafeInteger(entry.seq) || entry.seq < 1 || !entry.op || typeof entry.op.opId !== 'string' || !entry.op.opId ||
+        (ops.length > 0 && entry.seq !== ops[ops.length - 1]!.seq + 1)) throw new Error('invalid room log sequence');
+    ops.push(entry);
+  }
+  return ops;
+}
+
 async function loadLog(code: string): Promise<LoggedOp[]> {
   const file = path.join(DATA_DIR, `${code}.jsonl`);
   try {
@@ -127,44 +146,23 @@ async function loadLog(code: string): Promise<LoggedOp[]> {
     const st = await stat(file);
     if (st.size > MAX_LOG_FILE_BYTES) {
       const fh = await open(file, 'r');
-      const tailSize = 10 * 1024 * 1024;
-      const buf = Buffer.alloc(tailSize);
-      const { bytesRead } = await fh.read(buf, 0, tailSize, st.size - tailSize);
-      await fh.close();
-      const text = buf.toString('utf8', 0, bytesRead);
-      const lines = text.split('\n');
-      if (lines.length > 1) lines.shift();
-      const ops: LoggedOp[] = [];
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          ops.push(JSON.parse(line) as LoggedOp);
-        } catch {
-          continue;
-        }
-      }
-      return ops;
-    }
-    const text = await readFile(file, 'utf8');
-    const ops: LoggedOp[] = [];
-    for (const line of text.split('\n')) {
-      if (!line.trim()) continue;
       try {
-        ops.push(JSON.parse(line) as LoggedOp);
-      } catch {
-        continue;
+        const tailSize = 10 * 1024 * 1024;
+        const buf = Buffer.alloc(tailSize);
+        const { bytesRead } = await fh.read(buf, 0, tailSize, st.size - tailSize);
+        const text = buf.toString('utf8', 0, bytesRead);
+        const ops = parseLog(text.slice(text.indexOf('\n') + 1));
+        if (ops.length === 0) throw new Error('empty room log tail');
+        return ops;
+      } finally {
+        await fh.close();
       }
     }
-    return ops;
-  } catch {
-    return [];
+    return parseLog(await readFile(file, 'utf8'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
   }
-}
-
-function persist(room: Room, logged: LoggedOp): void {
-  const file = path.join(DATA_DIR, `${room.code}.jsonl`);
-  const line = JSON.stringify(logged) + '\n';
-  room.writeChain = room.writeChain.then(() => appendFile(file, line)).catch(() => undefined);
 }
 
 async function loadToken(code: string): Promise<string | null> {
@@ -176,10 +174,14 @@ async function loadToken(code: string): Promise<string | null> {
 }
 
 async function saveToken(code: string, token: string): Promise<void> {
+  const temp = path.join(BASE_DIR, `${code}.token.tmp-${randomUUID()}`);
   try {
     await mkdir(BASE_DIR, { recursive: true });
-    await writeFile(path.join(BASE_DIR, `${code}.token`), token);
-  } catch {}
+    await writeFile(temp, token);
+    await rename(temp, path.join(BASE_DIR, `${code}.token`));
+  } finally {
+    await unlink(temp).catch(() => {});
+  }
 }
 
 async function loadBaseMeta(code: string): Promise<BaseInfo | null> {
@@ -211,19 +213,27 @@ async function saveBaseSeq(code: string, seq: number): Promise<void> {
 // at the same instant each miss `rooms.get` during the await and create N Room
 // objects with the same code (different tokens), so they never see each other.
 const pendingRooms = new Map<string, Promise<Room>>();
+const sweepingRooms = new Map<string, Promise<void>>();
 
 async function getRoom(code: string): Promise<Room> {
+  const sweeping = sweepingRooms.get(code);
+  if (sweeping) { await sweeping; return getRoom(code); }
   const existing = rooms.get(code);
-  if (existing) return existing;
+  if (existing) { existing.reservations++; return existing; }
   const pending = pendingRooms.get(code);
-  if (pending) return pending;
+  if (pending) {
+    const room = await pending;
+    room.reservations++;
+    return room;
+  }
   const promise = (async () => {
     try {
       const log = await loadLog(code);
       const base = await loadBaseMeta(code);
-      const baseSeq = base ? await loadBaseSeq(code) : 0;
+      const baseSeq = base ? (typeof base.seq === 'number' && Number.isSafeInteger(base.seq) && base.seq >= 0 ? base.seq : await loadBaseSeq(code)) : 0;
       const persisted = await loadToken(code);
       const token = persisted ?? randomUUID().replace(/-/g, '').slice(0, 24);
+      if (!persisted) await saveToken(code, token);
       const room: Room = {
         code,
         token,
@@ -232,22 +242,26 @@ async function getRoom(code: string): Promise<Room> {
         lastBasePut: 0,
         peers: new Map(),
         locks: new Map(),
-        seq: log.length > 0 ? log[log.length - 1]!.seq : 0,
+        seq: Math.max(baseSeq, log.length > 0 ? log[log.length - 1]!.seq : 0),
         log: log.slice(-MAX_LOG_IN_MEMORY),
         flushTimer: null,
         writeChain: Promise.resolve(),
+        writeFailed: false,
+        reservations: 0,
+        baseUploading: false,
       };
       room.flushTimer = setInterval(() => flushCursors(room), CURSOR_FLUSH_MS);
       rooms.set(code, room);
       roomsByToken.set(room.token, room);
-      if (!persisted) void saveToken(code, token);
       return room;
     } finally {
       pendingRooms.delete(code);
     }
   })();
   pendingRooms.set(code, promise);
-  return promise;
+  const room = await promise;
+  room.reservations++;
+  return room;
 }
 
 function flushCursors(room: Room): void {
@@ -283,7 +297,7 @@ function rateLimited(peer: Peer): boolean {
 }
 
 async function handleHello(peer: Peer, msg: Extract<NonNullable<ReturnType<typeof parseC2S>>, { t: 'hello' }>): Promise<void> {
-  if (peer.info) {
+  if (peer.info || peer.joining) {
     send(peer.socket, { t: 'error', code: 'already_joined', message: 'hello already received' });
     return;
   }
@@ -298,57 +312,90 @@ async function handleHello(peer: Peer, msg: Extract<NonNullable<ReturnType<typeo
     peer.socket.close(1008, 'bad room');
     return;
   }
-  const room = await getRoom(code);
-  if (room.peers.size >= MAX_PEERS_PER_ROOM) {
-    send(peer.socket, { t: 'error', code: 'room_full', message: 'room is full' });
-    peer.socket.close(1013, 'room full');
+  const requested = msg.pending === undefined ? [] : pendingIds(msg.pending);
+  if (!requested) {
+    send(peer.socket, { t: 'error', code: 'bad_pending', message: 'invalid pending edit list' });
+    peer.socket.close(1008, 'bad pending list');
     return;
   }
-  const info: MemberInfo = {
-    id: peer.id,
-    name: sanitizeName(msg.name),
-    color: colorFor(peer.id),
-    aeVersion: typeof msg.aeVersion === 'string' ? msg.aeVersion.slice(0, 16) : 'unknown',
-    joinedAt: nowMs(),
-  };
-  if (typeof msg.build === 'string' && msg.build.length > 0) info.build = msg.build.slice(0, 16);
-  if (typeof msg.project === 'string' && msg.project.length > 0) {
-    info.project = msg.project.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80);
+  peer.joining = true;
+  let heldRoom: Room | null = null;
+  try {
+    const room = await getRoom(code);
+    heldRoom = room;
+    await room.writeChain;
+    if (peer.closed) return;
+    if (room.writeFailed) throw new Error('room log write failed');
+    const after = msg.after === undefined ? room.baseSeq : msg.after;
+    if (!Number.isSafeInteger(after) || after < 0 || after > room.seq || (msg.after !== undefined && msg.token !== room.token)) throw new Error('invalid replay anchor');
+    const receipts = await findReceipts(room, requested, path.join(DATA_DIR, `${code}.jsonl`));
+    if (peer.closed) return;
+    peer.pendingIds = new Set(requested);
+    mergeReceipts(room, peer.pendingIds, receipts);
+    peer.receipts = receipts.accepted;
+    if (room.peers.size >= MAX_PEERS_PER_ROOM) {
+      send(peer.socket, { t: 'error', code: 'room_full', message: 'room is full' });
+      peer.socket.close(1013, 'room full');
+      return;
+    }
+    const info: MemberInfo = {
+      id: peer.id,
+      name: sanitizeName(msg.name),
+      color: colorFor(peer.id),
+      aeVersion: typeof msg.aeVersion === 'string' ? msg.aeVersion.slice(0, 16) : 'unknown',
+      joinedAt: nowMs(),
+    };
+    if (typeof msg.build === 'string' && msg.build.length > 0) info.build = msg.build.slice(0, 16);
+    if (typeof msg.project === 'string' && msg.project.length > 0) {
+      info.project = msg.project.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80);
+    }
+    peer.info = info;
+    peer.room = room;
+    room.peers.set(peer.id, peer);
+    const members = [...room.peers.values()].filter((p) => p.id !== peer.id).map(publicInfo);
+    // A late joiner needs everything after the base. If the log cannot supply it
+    // (in-memory cap, file tail, or MAX_OPS_IN_WELCOME), say so instead of handing
+    // back a silently incomplete history.
+    const afterBase = room.log.filter((o) => o.seq > after);
+    const replayed = afterBase.slice(-MAX_OPS_IN_WELCOME);
+    const truncated =
+      room.seq > after && (replayed.length === 0 || replayed[0]!.seq > after + 1);
+    const welcome: S2C = {
+      t: 'welcome',
+      proto: PROTOCOL_VERSION,
+      selfId: peer.id,
+      room: room.code,
+      seq: room.seq,
+      members,
+      ops: replayed,
+      token: room.token,
+      base: room.base,
+      baseSeq: room.baseSeq,
+      checkpoint: true,
+    };
+    if (msg.pending !== undefined) welcome.accepted = [...peer.receipts.keys()];
+    if (msg.after !== undefined) welcome.after = after;
+    if (truncated) {
+      welcome.truncated = true;
+      welcome.fromSeq = replayed.length > 0 ? replayed[0]!.seq : room.seq + 1;
+    }
+    send(peer.socket, welcome);
+    broadcast(room, { t: 'presence', event: 'join', member: publicInfo(peer) }, peer.id);
+  } catch {
+    send(peer.socket, { t: 'error', code: 'recovery_unavailable', message: 'room state could not confirm recovery; retry later' });
+    peer.socket.close(1013, 'recovery unavailable');
+  } finally {
+    peer.joining = false;
+    if (heldRoom) {
+      heldRoom.reservations--;
+      releaseRoom(heldRoom);
+    }
   }
-  peer.info = info;
-  peer.room = room;
-  room.peers.set(peer.id, peer);
-  const members = [...room.peers.values()].filter((p) => p.id !== peer.id).map(publicInfo);
-  // A late joiner needs everything after the base. If the log cannot supply it
-  // (in-memory cap, file tail, or MAX_OPS_IN_WELCOME), say so instead of handing
-  // back a silently incomplete history.
-  const afterBase = room.log.filter((o) => o.seq > room.baseSeq);
-  const replayed = afterBase.slice(-MAX_OPS_IN_WELCOME);
-  const truncated =
-    room.seq > room.baseSeq && (replayed.length === 0 || replayed[0]!.seq > room.baseSeq + 1);
-  const welcome: S2C = {
-    t: 'welcome',
-    proto: PROTOCOL_VERSION,
-    selfId: peer.id,
-    room: room.code,
-    seq: room.seq,
-    members,
-    ops: replayed,
-    token: room.token,
-    base: room.base,
-    baseSeq: room.baseSeq,
-  };
-  if (truncated) {
-    welcome.truncated = true;
-    welcome.fromSeq = replayed.length > 0 ? replayed[0]!.seq : room.seq + 1;
-  }
-  send(peer.socket, welcome);
-  broadcast(room, { t: 'presence', event: 'join', member: publicInfo(peer) }, peer.id);
 }
 
 function handleOp(peer: Peer, op: EditOp): void {
   const room = peer.room!;
-  if (!op || typeof op !== 'object' || typeof op.opId !== 'string' || typeof op.kind !== 'string') {
+  if (!op || typeof op !== 'object' || typeof op.opId !== 'string' || op.opId.length === 0 || op.opId.length > 128 || typeof op.kind !== 'string') {
     send(peer.socket, { t: 'error', code: 'bad_op', message: 'malformed op' });
     return;
   }
@@ -362,15 +409,33 @@ function handleOp(peer: Peer, op: EditOp): void {
     broadcast(room, { t: 'op', seq: room.seq, author: peer.id, ts: nowMs(), op });
     return;
   }
-  room.seq++;
-  const logged: LoggedOp = { seq: room.seq, author: peer.id, ts: nowMs(), op };
-  room.log.push(logged);
-  if (room.log.length > MAX_LOG_IN_MEMORY) room.log.splice(0, room.log.length - MAX_LOG_IN_MEMORY);
-  persist(room, logged);
-  broadcast(room, { t: 'op', seq: logged.seq, author: logged.author, ts: logged.ts, op: logged.op });
+  room.writeChain = room.writeChain.then(async () => {
+    if (room.writeFailed) return;
+    const previous = peer.receipts.get(op.opId) ?? room.log.find((entry) => entry.op.opId === op.opId);
+    if (previous) {
+      send(peer.socket, { t: 'op', seq: previous.seq, author: peer.id, ts: previous.ts, op: previous.op });
+      return;
+    }
+    const logged: LoggedOp = { seq: room.seq + 1, author: peer.id, ts: nowMs(), op };
+    await appendFile(path.join(DATA_DIR, `${room.code}.jsonl`), JSON.stringify(logged) + '\n');
+    room.seq = logged.seq;
+    room.log.push(logged);
+    if (room.log.length > MAX_LOG_IN_MEMORY) room.log.splice(0, room.log.length - MAX_LOG_IN_MEMORY);
+    for (const member of room.peers.values()) {
+      if (member.pendingIds.has(op.opId)) member.receipts.set(op.opId, logged);
+    }
+    broadcast(room, { t: 'op', seq: logged.seq, author: logged.author, ts: logged.ts, op: logged.op });
+  }).catch(() => {
+    room.writeFailed = true;
+    for (const member of room.peers.values()) {
+      send(member.socket, { t: 'error', code: 'log_write_failed', message: 'room log could not save edits; reconnect to recover' });
+      member.socket.close(1013, 'log write failed');
+    }
+  });
 }
 
 function handleMessage(peer: Peer, raw: string): void {
+  if (peer.closed) return;
   const msg = parseC2S(raw);
   if (!msg) {
     send(peer.socket, { t: 'error', code: 'bad_json', message: 'could not parse message' });
@@ -447,6 +512,8 @@ function handleMessage(peer: Peer, raw: string): void {
 }
 
 function closePeer(peer: Peer): void {
+  if (peer.closed) return;
+  peer.closed = true;
   const room = peer.room;
   if (!room) return;
   room.peers.delete(peer.id);
@@ -457,11 +524,18 @@ function closePeer(peer: Peer): void {
     }
   }
   if (peer.info) broadcast(room, { t: 'presence', event: 'leave', member: publicInfo(peer) }, peer.id);
-  if (room.peers.size === 0) {
+  releaseRoom(room);
+}
+
+function releaseRoom(room: Room): void {
+  if (room.peers.size > 0 || room.reservations > 0) return;
+  const writes = room.writeChain;
+  void writes.then(() => {
+    if (rooms.get(room.code) !== room || room.peers.size > 0 || room.reservations > 0 || room.writeChain !== writes) return;
     if (room.flushTimer) clearInterval(room.flushTimer);
     rooms.delete(room.code);
     roomsByToken.delete(room.token);
-  }
+  });
 }
 
 function roomByToken(token: string | null): Room | undefined {
@@ -616,6 +690,26 @@ const httpServer = createServer((req, res) => {
         req.resume();
         return;
       }
+      const rawSeq = url.searchParams.get('seq');
+      const checkpoint = rawSeq === null ? room.seq : Number(rawSeq);
+      if (rawSeq !== null && (!/^\d+$/.test(rawSeq) || !Number.isSafeInteger(checkpoint))) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'bad_checkpoint' }));
+        req.resume();
+        return;
+      }
+      if (rawSeq !== null && (checkpoint > room.seq || checkpoint < room.baseSeq)) {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'stale_or_future_checkpoint' }));
+        req.resume();
+        return;
+      }
+      if (room.baseUploading) {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'base_upload_in_progress' }));
+        req.resume();
+        return;
+      }
       const nowPut = Date.now();
       if (nowPut - room.lastBasePut < 1500) {
         res.writeHead(429, { 'content-type': 'application/json' });
@@ -630,43 +724,59 @@ const httpServer = createServer((req, res) => {
         return;
       }
       room.lastBasePut = nowPut;
+      room.baseUploading = true;
+      room.reservations++;
       baseUploadsInFlight++;
       void (async () => {
+        const suffix = '.tmp-' + randomUUID();
+        const bodyTemp = baseFile(room.code) + suffix;
+        const metaFile = path.join(BASE_DIR, `${room.code}.json`);
+        const metaTemp = metaFile + suffix;
         try {
-        const body = await readBody(req, MAX_BASE_BYTES);
-        if (body === null) {
-          res.writeHead(413, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: 'too_large', max: MAX_BASE_BYTES }));
-          return;
-        }
-        if (body.length === 0) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: 'empty_body' }));
-          return;
-        }
-        const name = (url.searchParams.get('name') ?? 'base.aep').replace(/[^\w.\- ]/g, '').slice(0, 80) || 'base.aep';
-        const aeVersion = (url.searchParams.get('ae') ?? '').replace(/[^\w.\- ]/g, '').slice(0, 16);
-        const meta: BaseInfo = {
-          name,
-          size: body.length,
-          hash: createHash('sha256').update(body).digest('hex').slice(0, 16),
-          uploadedBy: (url.searchParams.get('by') ?? 'unknown').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 24) || 'unknown',
-          uploadedAt: Date.now(),
-          aeVersion: aeVersion || undefined,
-        };
-        await mkdir(BASE_DIR, { recursive: true });
-        await writeFile(baseFile(room.code), body);
-        await writeFile(path.join(BASE_DIR, `${room.code}.json`), JSON.stringify(meta));
-        room.base = meta;
-        // Everything up to now is baked into this base; late joiners only need
-        // the ops after this seq.
-        room.baseSeq = room.seq;
-        await saveBaseSeq(room.code, room.baseSeq);
-        broadcast(room, { t: 'base', base: meta });
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, base: meta }));
+          const body = await readBody(req, MAX_BASE_BYTES);
+          if (body === null) {
+            res.writeHead(413, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'too_large', max: MAX_BASE_BYTES }));
+            return;
+          }
+          if (body.length === 0) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'empty_body' }));
+            return;
+          }
+          const name = (url.searchParams.get('name') ?? 'base.aep').replace(/[^\w.\- ]/g, '').slice(0, 80) || 'base.aep';
+          const aeVersion = (url.searchParams.get('ae') ?? '').replace(/[^\w.\- ]/g, '').slice(0, 16);
+          const meta: BaseInfo = {
+            name,
+            size: body.length,
+            hash: createHash('sha256').update(body).digest('hex').slice(0, 16),
+            uploadedBy: (url.searchParams.get('by') ?? 'unknown').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 24) || 'unknown',
+            uploadedAt: Date.now(),
+            aeVersion: aeVersion || undefined,
+          };
+          if (rawSeq !== null) meta.seq = checkpoint;
+          await mkdir(BASE_DIR, { recursive: true });
+          await writeFile(bodyTemp, body);
+          await writeFile(metaTemp, JSON.stringify(meta));
+          await rename(bodyTemp, baseFile(room.code));
+          await rename(metaTemp, metaFile);
+          room.base = meta;
+          room.baseSeq = checkpoint;
+          await saveBaseSeq(room.code, room.baseSeq);
+          broadcast(room, { t: 'base', base: meta });
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, base: meta }));
+        } catch {
+          if (!res.headersSent) {
+            res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'base_write_failed' }));
+          } else res.destroy();
         } finally {
+          await Promise.allSettled([unlink(bodyTemp), unlink(metaTemp)]);
           baseUploadsInFlight--;
+          room.baseUploading = false;
+          room.reservations--;
+          releaseRoom(room);
         }
       })();
       return;
@@ -704,9 +814,13 @@ wss.on('connection', (ws) => {
     msgCount: 0,
     windowStart: nowMs(),
     alive: true,
+    joining: false,
+    closed: false,
+    pendingIds: new Set(),
+    receipts: new Map(),
   };
   const helloTimer = setTimeout(() => {
-    if (!peer.info) ws.close(1008, 'hello timeout');
+    if (!peer.info && !peer.joining) ws.close(1008, 'hello timeout');
   }, HELLO_TIMEOUT_MS);
 
   ws.on('message', (raw) => {
@@ -745,34 +859,42 @@ const heartbeat = setInterval(() => {
 
 async function sweepOldLogs(): Promise<void> {
   const now = Date.now();
-  try {
-    const files = await readdir(DATA_DIR);
-    for (const f of files) {
-      if (!f.endsWith('.jsonl')) continue;
-      const fp = path.join(DATA_DIR, f);
+  const groups = new Map<string, Array<{ file: string; token: boolean; state: boolean }>>();
+  for (const directory of [DATA_DIR, BASE_DIR]) {
+    try {
+      for (const name of await readdir(directory)) {
+        const ext = path.extname(name);
+        if (directory === DATA_DIR ? ext !== '.jsonl' : !['.aep', '.json', '.token', '.seq'].includes(ext)) continue;
+        const code = name.slice(0, -ext.length);
+        const files = groups.get(code) ?? [];
+        files.push({ file: path.join(directory, name), token: ext === '.token', state: ext !== '.token' && ext !== '.seq' });
+        groups.set(code, files);
+      }
+    } catch {}
+  }
+  for (const [code, files] of groups) {
+    if (rooms.has(code) || pendingRooms.has(code) || sweepingRooms.has(code)) continue;
+    const sweeping = (async (): Promise<void> => {
       try {
-        const st = await stat(fp);
-        if (now - st.mtimeMs > LOG_MAX_AGE_MS) {
-          await rm(fp);
-          console.log(`[vynk] swept old log: ${f}`);
+        const ages = await Promise.all(files.map(async (entry) => {
+          try { return { ...entry, old: now - (await stat(entry.file)).mtimeMs > LOG_MAX_AGE_MS }; }
+          catch { return null; }
+        }));
+        const retained = ages.some((entry) => entry !== null && entry.state && !entry.old);
+        for (const entry of ages) {
+          if (!entry || !entry.old || (entry.token && retained)) continue;
+          try {
+            await rm(entry.file);
+            console.log(`[vynk] swept old room file: ${path.basename(entry.file)}`);
+          } catch {}
         }
-      } catch {}
-    }
-  } catch {}
-  try {
-    const bases = await readdir(BASE_DIR);
-    for (const f of bases) {
-      if (!f.endsWith('.aep') && !f.endsWith('.json') && !f.endsWith('.token')) continue;
-      const fp = path.join(BASE_DIR, f);
-      try {
-        const st = await stat(fp);
-        if (now - st.mtimeMs > LOG_MAX_AGE_MS) {
-          await rm(fp);
-          console.log(`[vynk] swept old base: ${f}`);
-        }
-      } catch {}
-    }
-  } catch {}
+      } finally {
+        sweepingRooms.delete(code);
+      }
+    })();
+    sweepingRooms.set(code, sweeping);
+    await sweeping;
+  }
 }
 
 async function main(): Promise<void> {

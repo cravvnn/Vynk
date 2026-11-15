@@ -47,8 +47,14 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: State models
+        run: npm run check:tla
+
       - name: Relay endpoint tests
         run: npm run test:base
+
+      - name: Edit recovery with dropped frames and relay restart
+        run: npm run test:delivery
 
       - name: Soak (30s)
         run: node tools/soak-system.mjs 0.5 3
@@ -77,6 +83,16 @@ jobs:
             $id = Get-Content relay.pid
             Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
           }
+
+  panel-legacy-runtime:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 8.6.0
+      - name: Panel HTTP and file helpers on early AE 2020 Node
+        run: node tools/test-panel-runtime.cjs
 
   package-portability:
     runs-on: ubuntu-latest

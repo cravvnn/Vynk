@@ -59,6 +59,15 @@ function windowOf(who) {
 }
 const isRunning = (who) => windowOf(who) !== '';
 
+function processIdOf(who) {
+  try {
+    return Number(execSync(
+      `powershell -NoProfile -Command "(Get-Process -Name '${PROC[who]}' -ErrorAction SilentlyContinue | Select-Object -First 1).Id"`,
+      { encoding: 'utf8' }
+    ).trim()) || null;
+  } catch { return null; }
+}
+
 let cmdSeq = Date.now() % 100000;
 async function cmd(who, payload, timeout = 240000) {
   const id = ++cmdSeq;
@@ -86,11 +95,9 @@ const js = (who, code, timeout) => cmd(who, { js: code }, timeout);
 // Like a person, a scenario selects the layer it edits (select: false opts out,
 // which is how a script or plug-in would touch a layer).
 function focusWindow(who) {
-  try {
-    return execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(here, 'focus.ps1')}" -ProcessName "${PROC[who]}"`, { encoding: 'utf8' }).trim();
-  } catch {
-    return 'error';
-  }
+  const result = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(here, 'focus.ps1')}" -ProcessName "${PROC[who]}"`, { encoding: 'utf8' }).trim();
+  if (result !== 'focused') throw new Error(who + ': could not focus the AE window: ' + result);
+  return result;
 }
 
 // One native companion call made through a panel (ARBGET/ARBSET).
@@ -175,7 +182,9 @@ function reopen(projPath) {
 // AE Beta quits after the script when cold-started with -r, so instances are
 // always started bare and scripts are sent to the running instance.
 function launch(who) {
-  spawn(INST[who].exe, [], { detached: true, stdio: 'ignore' }).unref();
+  const child = spawn(INST[who].exe, [], { detached: true, stdio: 'ignore' });
+  child.unref();
+  return child.pid;
 }
 
 // AE refuses a -r script while a panel script is running, so prefer the
@@ -224,7 +233,7 @@ function observe(room, logFile) {
       else obs.members.delete(m.member.id);
       logStream.write(`${ts} presence ${m.event} ${m.member.name}\n`);
     } else if (m.t === 'op') {
-      obs.ops.push({ at: Date.now(), by: obs.members.get(m.author) || m.author, op: m.op });
+      if (m.op.kind !== 'need' && m.op.kind !== 'sum') obs.ops.push({ at: Date.now(), by: obs.members.get(m.author) || m.author, op: m.op });
       logStream.write(`${ts} OP #${m.seq} by=${obs.members.get(m.author) || m.author} ${m.op.kind} ${m.op.path || ''} layer=${m.op.target && m.op.target.layer} ${JSON.stringify(m.op.value === undefined ? '' : m.op.value).slice(0, 160)}\n`);
     } else if (m.t === 'log') logStream.write(`${ts} PANEL ${m.name}: ${m.line}\n`);
   });
@@ -247,18 +256,34 @@ async function quitInstances() {
   let saved = {};
   try { saved = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
   const ours = saved.launched || [];
+  const pids = saved.pids || {};
   for (const who of ours) {
+    const pid = processIdOf(who);
+    if (!pid) continue;
+    if (!pids[who] || pids[who] !== pid) {
+      say(who + ': shutdown skipped - process ownership does not match');
+      continue;
+    }
+    const expected = fwd(path.join(WORK, who.toLowerCase(), 'pair.aep')).toLowerCase();
     try {
-      await jsx(who, "(function(){try{app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);}catch(e){} app.quit(); return 'bye';})()", 8000);
+      const result = await jsx(who,
+        "(function(){var p=app.project;if(p&&p.numItems>0){" +
+        "if(!p.file||p.file.fsName.replace(/\\\\/g,'/').toLowerCase()!==" + JSON.stringify(expected) + ")return 'refused: not the disposable test project';}" +
+        "if(p)p.close(CloseOptions.DO_NOT_SAVE_CHANGES);app.quit();return 'bye';})()", 8000);
+      if (result !== 'bye') say(who + ': shutdown ' + result);
     } catch {}
   }
-  await waitFor(() => ours.every((w) => !isRunning(w)), 25000);
-  for (const who of ours) {
-    if (!isRunning(who)) continue;
-    try { execSync(`taskkill /IM "${PROC[who]}.exe" /F`, { stdio: 'ignore' }); } catch {}
+  const remaining = () => ours.filter((who) => {
+    const pid = processIdOf(who);
+    return pid && (!pids[who] || pids[who] === pid);
+  });
+  if (!(await waitFor(() => remaining().length === 0, 25000))) {
+    say('shutdown incomplete: ' + remaining().join(', ') + ' left running; test ownership records kept');
+    return false;
   }
   try { fs.unlinkSync(HARNESS_JSON); } catch {}
   try { fs.unlinkSync(STATE); } catch {}
+  return true;
 }
 
 async function main() {
@@ -266,9 +291,9 @@ async function main() {
   fs.mkdirSync(path.dirname(HARNESS_JSON), { recursive: true });
 
   if (flag('--stop')) {
-    await quitInstances();
-    say('stopped');
-    return 0;
+    const stopped = await quitInstances();
+    if (stopped) say('stopped');
+    return stopped ? 0 : 3;
   }
 
   const attach = flag('--attach');
@@ -285,6 +310,19 @@ async function main() {
   if (attach && !(isRunning('A') && isRunning('B'))) {
     say('--attach needs both instances running');
     return 4;
+  }
+  if (attach) {
+    let ownership = {};
+    try { ownership = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
+    for (const who of ['A', 'B']) {
+      if (!ownership.pids || ownership.pids[who] !== processIdOf(who)) {
+        say('--attach refused: ' + who + ' is not a recorded test process');
+        return 4;
+      }
+      const expected = fwd(path.join(WORK, who.toLowerCase(), 'pair.aep')).toLowerCase();
+      const safe = await jsx(who, "(function(){var p=app.project;return !p||p.numItems===0||(p.file&&p.file.fsName.replace(/\\\\/g,'/').toLowerCase()===" + JSON.stringify(expected) + ")?'ok':'unrelated project';})()", 8000);
+      if (safe !== 'ok') { say('--attach refused: ' + who + ' has ' + safe); return 4; }
+    }
   }
 
   const relay = await startRelay();
@@ -304,11 +342,13 @@ async function main() {
         fs.rmSync(path.join(WORK, d), { recursive: true, force: true });
         fs.mkdirSync(path.join(WORK, d), { recursive: true });
       }
-      fs.writeFileSync(STATE, JSON.stringify({ launched: ['A', 'B'] }));
-      say('launching A: ' + INST.A.exe);
-      launch('A');
-      say('launching B: ' + INST.B.exe);
-      launch('B');
+      const ownership = { launched: [], pids: {} };
+      for (const who of ['A', 'B']) {
+        say('launching ' + who + ': ' + INST[who].exe);
+        ownership.pids[who] = launch(who);
+        ownership.launched.push(who);
+        fs.writeFileSync(STATE, JSON.stringify(ownership));
+      }
       for (const who of ['A', 'B']) {
         let ticks = 0;
         const up = await waitFor(() => {
@@ -371,10 +411,12 @@ async function main() {
       const opsBefore = obs.ops.length;
       const pre = await dump(sc.who);
       let note = '';
+      let setupOk = true;
       if (sc.before) {
         const got = await js(sc.before.who, sc.before.js);
-        if (got !== 'ok') note = 'before: ' + got;
+        if (got !== 'ok') { note = 'before: ' + got; setupOk = false; }
       }
+      if (sc.focus) focusWindow(sc.who);
       let outs;
       if (sc.run) {
         outs = [await sc.run({ js, jsx, wrap, sleep, waitFor, obs, native, focus: focusWindow })];
@@ -384,6 +426,7 @@ async function main() {
         outs = await Promise.all(runs);
       }
       if (outs.some((o) => o !== 'ok')) note = 'edit: ' + outs.join(' / ');
+      let changed = diff(pre, await dump(sc.who)).size > 0;
       // The receiving teammate is working in After Effects (some commands only
       // run while it is the foreground app).
       if (sc.focus) focusWindow(sc.focus);
@@ -392,11 +435,11 @@ async function main() {
         await jsx(sc.then.who, sc.then.raw);
       }
       const timeout = sc.timeout || 10000;
+      const settleDeadline = Date.now() + timeout;
       let fresh = new Map();
       let okStreak = 0;
       let convergedAt = 0;
-      let changed = false;
-      while (Date.now() - t0 < timeout) {
+      while (Date.now() < settleDeadline) {
         await sleep(450);
         const a = await dump('A');
         const b = await dump('B');
@@ -428,7 +471,9 @@ async function main() {
       const opsDuring = obs.ops.length - opsBefore;
       await sleep(1200);
       const chatter = obs.ops.length - opsBefore - opsDuring;
-      const pass = fresh.size === 0 && !checkFail && !note.startsWith('edit: ERR');
+      const noChange = !changed && !sc.then && !sc.allowUnchanged && !sc.check;
+      const pass = okStreak >= 2 && fresh.size === 0 && !checkFail && setupOk && outs.every((o) => o === 'ok') && !noChange;
+      if (okStreak < 2) note += (note ? '; ' : '') + 'comparison deadline elapsed without two matching reads';
       if (!changed && !sc.then) note += (note ? '; ' : '') + 'edit changed nothing locally';
       if (chatter > 0) note += (note ? '; ' : '') + `${chatter} op(s) still flowing after settle`;
       const row = { name: sc.name, who: sc.who, pass, known: !!sc.known, ms: convergedAt, ops: opsDuring, note, diffs: [...fresh].slice(0, 12).map(([k, v]) => ({ key: k, A: v[0], B: v[1] })), diffCount: fresh.size };
@@ -441,22 +486,24 @@ async function main() {
       }
     }
 
+    const finalDiffs = [...diff(await dump('A'), await dump('B'))];
     const health = {};
     for (const who of ['A', 'B']) {
       try { health[who] = JSON.parse(await js(who, 'JSON.stringify(window.vynkHealth())')); } catch {}
     }
     const passed = results.filter((r) => r.pass).length;
     const gaps = results.filter((r) => !r.pass && r.known).length;
-    const report = { room, at: new Date().toISOString(), passed, total: results.length, health, results };
+    const report = { room, at: new Date().toISOString(), passed, total: results.length, finalDiffs: finalDiffs.slice(0, 30), finalDiffCount: finalDiffs.length, health, results };
     fs.writeFileSync(path.join(WORK, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`\n${passed}/${results.length} scenarios converged` + (gaps ? ` (${gaps} known gap)` : ''));
     console.log('health A: ' + JSON.stringify(health.A));
     console.log('health B: ' + JSON.stringify(health.B));
     console.log('report: ' + path.join(WORK, 'report.json'));
-    code = passed + gaps === results.length ? 0 : 1;
+    if (finalDiffs.length > 0) console.log('final project comparison: ' + finalDiffs.length + ' differing key(s)');
+    code = passed + gaps === results.length && finalDiffs.length === 0 ? 0 : 1;
   } finally {
     try { obs.ws.close(); } catch {}
-    if (!flag('--keep') && !attach) await quitInstances();
+    if (!flag('--keep') && !attach && !(await quitInstances())) code = 3;
     relay.kill();
   }
   return code;

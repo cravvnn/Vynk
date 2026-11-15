@@ -1,0 +1,17 @@
+[
+  {
+    "name": "discard edit on send",
+    "replace": [["IF RetainUntilEcho THEN queued ELSE queued \\ {p}", "queued \\ {p}"], ["IF RetainUntilEcho THEN stored ELSE stored \\ {p}", "stored \\ {p}"]],
+    "expect": "NoLostEdit"
+  },
+  {
+    "name": "send before welcome",
+    "replace": [["IF WelcomeGate THEN phase[p] = \"joined\" ELSE phase[p] # \"closed\"", "phase[p] # \"closed\""]],
+    "expect": "NoOpBeforeWelcome"
+  },
+  {
+    "name": "retry logs a second edit",
+    "replace": [["IF Deduplicate /\\ p \\in log THEN commits", "IF FALSE THEN commits"]],
+    "expect": "NoDuplicateCommit"
+  }
+]

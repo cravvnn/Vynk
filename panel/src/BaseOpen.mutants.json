@@ -1,0 +1,10 @@
+[
+  { "name": "replace a project edited after confirmation", "replace": [["RevisionGuard /\\ revision # guardRevision", "FALSE"]], "expect": "NoWrongProjectOpen" },
+  { "name": "replace another project with the same revision", "replace": [["FileGuard /\\ file # guardFile", "FALSE"]], "expect": "NoWrongProjectOpen" },
+  { "name": "keep seen IDs from the project replaced by the base", "replace": [["IF ResetSeen THEN FALSE ELSE seen", "seen"]], "expect": "FreshHistoryReapplied" },
+  { "name": "replay a new base checkpoint onto an older downloaded file", "replace": [["BindBase /\\ base # 0", "FALSE"]], "expect": "NoWrongBaseReplay" },
+  { "name": "switch room while an open is already posted", "replace": [["(~CriticalBarrier \\/ phase # \"open\")", "TRUE"]], "expect": "NoWrongProjectOpen" },
+  { "name": "discard a posted open on socket close", "replace": [["jobAlive' = KeepPostedJob", "jobAlive' = FALSE"]], "expect": "NoStrandedOpen" },
+  { "name": "discard a posted open when a new base is announced", "replace": [["base' = 1 /\\ changed' = TRUE", "base' = 1 /\\ changed' = TRUE /\\ jobAlive' = FALSE"], ["replayed, opened, wrongOpen, dropped, jobAlive>>\nFreshWelcome", "replayed, opened, wrongOpen, dropped>>\nFreshWelcome"]], "expect": "NoStrandedOpen" },
+  { "name": "open without affirmative replacement confirmation", "replace": [["IF context = 0 /\\ confirmed THEN \"open\"", "IF context = 0 THEN \"open\""]], "expect": "NoUnconfirmedOpen" }
+]

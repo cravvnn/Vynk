@@ -2,7 +2,7 @@
   'use strict';
 
   var PROTO = 2;
-  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev');
+  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev') + ' m3.5';
   var CURSOR_FLUSH_MS = 33;
   var POLL_FAST_MS = 200;
   var POLL_BURST_MS = 2500;
@@ -101,17 +101,39 @@
     projectPath: '',
     roomToken: '',
     baseInfo: null,
+    baseCheckpoint: false,
+    baseJob: null,
+    baseHold: '',
+    expectedBase: null,
+    relaySeq: 0,
+    session: null,
+    resume: null,
+    replayRequest: null,
+    replayContext: null,
+    continuingReplay: false,
+    replayAfter: 0,
     seenOps: {},
     seenOpCount: 0,
     everConnected: false,
     outbox: [],
     outboxKey: '',
+    outboxToken: '',
+    outboxProject: '',
+    outboxStopped: 0,
+    deliveryError: '',
+    deliveryReady: false,
+    deliveryWelcome: null,
+    outboxTimer: null,
+    outboxWindowAt: 0,
+    outboxWindowCount: 0,
+    hostInfoKnown: !inAE,
     pollMs: 0,
     applyFails: 0,
     reconnects: 0,
     lastRxAt: 0,
     catchupState: 'none',
     pendingReplay: null,
+    replaySeq: null,
     baseOpened: false,
     replayApplied: false,
     replayTruncated: false,
@@ -293,83 +315,231 @@
   }
 
   function send(msg) {
-    if (state.ws && state.ws.readyState === 1) {
+    if (msg.t === 'op' && msg.op.kind !== 'need' && msg.op.kind !== 'sum') {
+      if (!state.everConnected || state.deliveryError) return false;
+      for (var i = 0; i < state.outbox.length; i++) {
+        if (state.outbox[i].opId === msg.op.opId) return true;
+      }
+      if (state.outbox.length >= MAX_OUTBOX) {
+        pauseDelivery('the recovery queue is full');
+        return false;
+      }
+      if (state.outbox.length === 0) state.outboxProject = state.projectPath;
+      state.outbox.push(msg.op);
+      if (!persistOutbox()) return false;
+      trackPending(msg.op, 1);
+      flushOutbox();
+      return true;
+    }
+    if (state.ws && state.ws.readyState === 1 && (msg.t === 'hello' || state.connected)) {
       if (msg.t === 'op') state.opsSent += (msg.op.kind === 'batch' ? msg.op.value.ops.length : 1);
       state.ws.send(JSON.stringify(msg));
-      return;
+      return true;
     }
-    if (msg.t === 'op' && state.everConnected) {
-      if (state.outbox.length >= MAX_OUTBOX) state.outbox.shift();
-      state.outbox.push(msg.op);
-      persistOutbox();
-    }
+    return false;
   }
 
   function outboxKey(server, room) {
     return 'collab.outbox.' + (server || '') + '|' + (room || '');
   }
 
-  // The offline queue survives a panel reload / AE restart. Ops are written
-  // through on every change and removed the moment they are sent, so a crash
-  // can lose an unsent edit but can never deliver one twice.
-  function persistOutbox() {
-    var key = state.outboxKey;
-    if (!key) return;
+  function pauseDelivery(reason) {
+    if (state.deliveryError) return;
+    state.deliveryError = reason;
+    state.outboxStopped = 1;
     try {
-      if (state.outbox.length === 0) {
-        localStorage.removeItem(key);
-        return;
-      }
-      try {
-        localStorage.setItem(key, JSON.stringify({ ops: state.outbox }));
-      } catch (e) {
-        state.outbox = state.outbox.slice(-Math.max(1, Math.floor(state.outbox.length / 2)));
-        localStorage.setItem(key, JSON.stringify({ ops: state.outbox }));
-        log('note: offline queue trimmed to the newest ' + state.outbox.length + ' edit(s) to fit storage');
+      var saved = JSON.parse(localStorage.getItem(state.outboxKey) || 'null');
+      if (saved) {
+        saved.stopped = 1;
+        localStorage.setItem(state.outboxKey, JSON.stringify(saved));
       }
     } catch (e) {}
+    log('sync paused: ' + reason + '. Save your project; leave this room before starting a new session.');
+    renderHealth();
+  }
+
+  function persistOutbox() {
+    var key = state.outboxKey;
+    if (!key) return false;
+    try {
+      localStorage.setItem(key, JSON.stringify({ ops: state.outbox, token: state.outboxToken, project: state.outboxProject, stopped: state.outboxStopped }));
+      return true;
+    } catch (e) {
+      pauseDelivery('recovery storage could not save an edit');
+      return false;
+    }
   }
 
   function loadOutbox(key) {
     try {
       var saved = JSON.parse(localStorage.getItem(key) || 'null');
-      if (!saved || !saved.ops || !saved.ops.length) return [];
+      if (!saved) return [];
+      if (!Array.isArray(saved.ops) || saved.ops.length > MAX_OUTBOX) throw new Error('invalid queue');
+      state.outboxToken = typeof saved.token === 'string' ? saved.token : '';
+      state.outboxProject = typeof saved.project === 'string' ? saved.project : '';
+      if (saved.stopped) pauseDelivery('the previous session could not save every edit');
       var ops = [];
       for (var i = 0; i < saved.ops.length; i++) {
-        if (saved.ops[i] && saved.ops[i].opId) ops.push(saved.ops[i]);
+        if (!saved.ops[i] || typeof saved.ops[i].opId !== 'string' || !saved.ops[i].opId) throw new Error('invalid queue');
+        ops.push(saved.ops[i]);
       }
-      return ops.slice(-MAX_OUTBOX);
+      return ops;
     } catch (e) {
+      pauseDelivery('saved recovery data could not be read');
       return [];
     }
   }
 
-  function flushOutbox() {
-    if (state.outbox.length === 0) return;
-    var queued = state.outbox;
-    state.outbox = [];
-    persistOutbox();
-    for (var i = 0; i < queued.length; i++) send({ t: 'op', op: queued[i] });
-    log('flushed ' + queued.length + ' edit(s) made while offline');
+  function trackPending(op, delta) {
+    var list = innerOps(op);
+    for (var i = 0; i < list.length; i++) {
+      var key = Sync && Sync.targetKey(list[i]);
+      if (!key) continue;
+      var count = (state.pending[key] || 0) + delta;
+      if (count > 0) state.pending[key] = count;
+      else delete state.pending[key];
+    }
   }
 
-  function connect() {
+  function acknowledge(opId) {
+    for (var i = 0; i < state.outbox.length; i++) {
+      if (state.outbox[i].opId !== opId) continue;
+      trackPending(state.outbox[i], -1);
+      state.outbox.splice(i, 1);
+      delete state.awaiting[opId];
+      state.seenOps[opId] = 1;
+      persistOutbox();
+      return true;
+    }
+    return false;
+  }
+
+  function resumeDelivery() {
+    var msg = state.deliveryWelcome;
+    if (!state.connected || !msg || !state.hostInfoKnown || state.deliveryError) return;
+    if (state.outbox.length > 0) {
+      if (!state.outboxToken || state.outboxToken !== state.roomToken) {
+        pauseDelivery('saved edits belong to a different or expired room');
+        return;
+      }
+      if (state.outboxProject !== state.projectPath) {
+        pauseDelivery('saved edits belong to another project');
+        return;
+      }
+      if (!Array.isArray(msg.accepted)) {
+        pauseDelivery('this relay needs an update to recover edits safely');
+        return;
+      }
+    }
+    state.outboxToken = state.roomToken;
+    state.outboxProject = state.projectPath;
+    state.pending = {};
+    for (var i = 0; i < state.outbox.length; i++) trackPending(state.outbox[i], 1);
+    var accepted = msg.accepted || [];
+    for (i = 0; i < accepted.length; i++) acknowledge(accepted[i]);
+    if (state.deliveryError || !persistOutbox()) return;
+    state.deliveryReady = true;
+    state.deliveryWelcome = null;
+    if (state.replayContext && state.replayContext.path === null && state.replayContext.project === state.shadows) state.replayContext.path = state.projectPath;
+    tryApplyReplay();
+    rememberReplay();
+    flushOutbox();
+    kickCycle(0);
+  }
+
+  function flushOutbox() {
+    if (!state.deliveryReady || state.deliveryError || state.baseHold || !state.connected || !state.ws || state.ws.readyState !== 1) return;
+    var now = Date.now();
+    if (now - state.outboxWindowAt >= 200) {
+      state.outboxWindowAt = now;
+      state.outboxWindowCount = 0;
+    }
+    for (var i = 0; i < state.outbox.length; i++) {
+      var op = state.outbox[i];
+      if (state.awaiting[op.opId]) continue;
+      if (state.outboxWindowCount >= 40) {
+        if (!state.outboxTimer) state.outboxTimer = later(function () {
+          state.outboxTimer = null;
+          flushOutbox();
+        }, Math.max(1, state.outboxWindowAt + 200 - Date.now()));
+        return;
+      }
+      state.awaiting[op.opId] = 1;
+      state.outboxWindowCount++;
+      try {
+        state.ws.send(JSON.stringify({ t: 'op', op: op }));
+        state.opsSent += innerOps(op).length;
+      } catch (e) {
+        log('connection interrupted while sending; edit retained for recovery');
+        reconnectSocket();
+        return;
+      }
+    }
+  }
+
+  function currentSocket(ws) {
+    return !stale() && state.ws === ws;
+  }
+
+  function requestContext() {
+    return { ws: state.ws, project: state.shadows, path: state.projectPath };
+  }
+
+  function currentRequest(ctx) {
+    return currentSocket(ctx.ws) && ctx.project === state.shadows && ctx.path === state.projectPath;
+  }
+
+  function switchRoom() {
+    persistOutbox();
+    state.outbox = [];
+    state.outboxToken = '';
+    state.outboxProject = '';
+    state.outboxStopped = 0;
+    state.deliveryError = '';
+    state.pending = {};
+    state.expectedBase = null;
+    state.baseHold = '';
+    state.everConnected = false;
+    state.seenOps = {};
+    state.seenOpCount = 0;
+    state.pendingReplay = null;
+    state.replayApplied = false;
+    state.replayTruncated = false;
+    state.catchupState = 'none';
+    state.peerSums = {};
+    state.needs = [];
+    state.repairAsked = {};
+    state.repairSent = {};
+    state.verifiedAt = {};
+    state.needSentAt = {};
+    state.lastNeedPair = '';
+    state.lastNeedAt = 0;
+    state.lastSumAt = 0;
+    state.myHash = '';
+    state.hashComp = null;
+    resetBaselines();
+  }
+
+  function connect(options) {
+    if (baseActionBusy()) { log('wait for the project file operation to finish'); return; }
     disconnect();
     wantConnected = true;
-    var url = $('serverInput').value.trim() || defaultServer();
-    var room = $('roomInput').value.trim().toUpperCase();
+    var url = options ? options.url : $('serverInput').value.trim() || defaultServer();
+    var room = options ? options.room : $('roomInput').value.trim().toUpperCase();
     if (!room) {
       room = randomCode();
       $('roomInput').value = room;
     }
-    var name = $('nameInput').value.trim() || 'anon';
-    saveSettings();
-    state.outboxKey = outboxKey(url, room);
+    var name = options ? options.name : $('nameInput').value.trim() || 'anon';
+    if (!options) saveSettings();
+    var key = outboxKey(url, room);
+    if (state.outboxKey && state.outboxKey !== key) switchRoom();
+    state.outboxKey = key;
     if (state.outbox.length === 0) {
       var restored = loadOutbox(state.outboxKey);
       if (restored.length > 0) {
         state.outbox = restored;
-        log('restored ' + restored.length + ' unsent edit(s) from the last session');
+        log('restored ' + restored.length + ' unconfirmed edit(s) from the last session');
       }
     }
     setStatus('warn', 'connecting');
@@ -383,57 +553,96 @@
       return;
     }
     state.ws = ws;
+    state.session = { url: url, room: room, name: name };
     ws.onopen = function () {
+      if (!currentSocket(ws)) return;
       var sent = false;
       var sendHello = function () {
-        if (sent) return;
+        if (sent || !currentSocket(ws)) return;
         sent = true;
-        send({ t: 'hello', proto: PROTO, room: room, name: name, aeVersion: (hostVersion || 'unknown') + ' ' + PANEL_BUILD, build: PANEL_BUILD, project: state.projectName || '' });
+        var pending = [];
+        for (var i = 0; i < state.outbox.length; i++) pending.push(state.outbox[i].opId);
+        var hello = { t: 'hello', proto: PROTO, room: room, name: name, aeVersion: (hostVersion || 'unknown') + ' ' + PANEL_BUILD, build: PANEL_BUILD, project: state.projectName || '', pending: pending };
+        if (currentResume(state.resume)) {
+          state.replayRequest = state.resume;
+          hello.token = state.resume.token;
+          hello.after = state.resume.after;
+        }
+        send(hello);
       };
       var timer = later(sendHello, 600);
       fetchHostInfo(function () { clearTimeout(timer); sendHello(); });
     };
     ws.onmessage = function (ev) {
-      if (stale()) return;
+      if (!currentSocket(ws)) return;
       var msg;
       try { msg = JSON.parse(ev.data); } catch (e) { return; }
       onMessage(msg);
     };
     ws.onclose = function () {
-      if (stale()) return;
-      if (state.connected) log('disconnected');
-      state.connected = false;
-      state.selfId = null;
-      state.members = {};
-      state.order = [];
-      state.pending = {};
-      state.awaiting = {};
-      state.roomToken = '';
-      state.baseInfo = null;
-      state.baseOpened = false;
-      renderBase();
-      setStatus('', 'offline');
-      $('connectBtn').textContent = 'join';
-      renderMembers();
-      pushPeersToNative();
-      if (wantConnected) {
-        retryCount++;
-        state.reconnects = (state.reconnects || 0) + 1;
-        var backoff = Math.min(RECONNECT_DELAY_MS * Math.min(retryCount, 5), 15000);
-        log('reconnecting in ' + Math.round(backoff / 1000) + 's (attempt ' + retryCount + ')');
-        later(function () { if (wantConnected) connect(); }, backoff);
-      }
+      if (!currentSocket(ws)) return;
+      reconnectSocket();
     };
     ws.onerror = function () {
+      if (!currentSocket(ws)) return;
       setStatus('err', 'socket error');
     };
   }
 
-  function disconnect() {
-    if (state.ws) {
-      try { state.ws.close(); } catch (e) {}
-      state.ws = null;
+  function reconnectSocket() {
+    var session = state.session;
+    disconnect();
+    if (wantConnected) {
+      retryCount++;
+      state.reconnects = (state.reconnects || 0) + 1;
+      var backoff = Math.min(RECONNECT_DELAY_MS * Math.min(retryCount, 5), 15000);
+      log('reconnecting in ' + Math.round(backoff / 1000) + 's (attempt ' + retryCount + ')');
+      later(function () { if (wantConnected && !state.ws) connect(session); }, backoff);
     }
+  }
+
+  function leaveRoom() {
+    if (baseActionBusy()) { log('wait for the project file operation to finish'); return; }
+    wantConnected = false;
+    state.outbox = [];
+    state.deliveryError = '';
+    state.outboxStopped = 0;
+    state.pending = {};
+    state.everConnected = false;
+    state.expectedBase = null;
+    state.baseHold = '';
+    persistOutbox();
+    disconnect();
+    resetBaselines();
+  }
+
+  function disconnect() {
+    if (!baseActionBusy()) cancelBaseJob();
+    var ws = state.ws;
+    state.ws = null;
+    if (state.connected) log('disconnected');
+    state.connected = false;
+    state.selfId = null;
+    state.members = {};
+    state.order = [];
+    state.deliveryReady = false;
+    state.deliveryWelcome = null;
+    state.replayRequest = null;
+    if (state.outboxTimer) clearTimeout(state.outboxTimer);
+    state.outboxTimer = null;
+    state.outboxWindowAt = 0;
+    state.outboxWindowCount = 0;
+    state.awaiting = {};
+    state.roomToken = '';
+    state.baseInfo = null;
+    state.baseCheckpoint = false;
+    state.baseOpened = false;
+    renderBase();
+    setStatus('', 'offline');
+    $('connectBtn').textContent = 'join';
+    renderMembers();
+    pushPeersToNative();
+    if (ws) { try { ws.close(); } catch (e) {} }
   }
 
   function onMessage(msg) {
@@ -443,9 +652,7 @@
         state.connected = true;
         if (!state.everConnected) {
           // Sync starts from what the project holds at the moment of joining.
-          state.shadows = {};
-          state.shadowItems = null;
-          state.agreed = {};
+          resetBaselines();
           state.wantItems = true;
         }
         state.everConnected = true;
@@ -456,6 +663,28 @@
         state.historyFetchTried = false;
         state.fetchingHistory = false;
         state.baseInfo = sanitizeBase(msg.base);
+        state.baseCheckpoint = msg.checkpoint === true;
+        state.relaySeq = typeof msg.seq === 'number' ? msg.seq : 0;
+        var request = state.replayRequest;
+        state.continuingReplay = !!(currentResume(request) && request.token === state.roomToken &&
+          (msg.after === request.after || (msg.after === undefined && state.baseSeq === request.after)));
+        state.replayAfter = state.continuingReplay ? request.after : state.baseSeq;
+        if ((request || msg.after !== undefined) && !state.continuingReplay) {
+          state.baseHold = 'the project or room history changed during reconnect; get the current base';
+          log('sync held: ' + state.baseHold);
+        }
+        if (state.expectedBase) {
+          var expected = state.expectedBase;
+          if (state.baseInfo && state.baseInfo.hash === expected.hash && state.baseInfo.seq === expected.seq && state.baseSeq === expected.seq && state.roomToken === expected.token) {
+            state.baseHold = '';
+            state.baseOpened = true;
+            state.expectedBase = null;
+          } else {
+            state.baseHold = 'the shared base changed; get the latest base';
+            log('sync held: ' + state.baseHold);
+          }
+        }
+        state.deliveryWelcome = msg;
         retryCount = 0;
         state.members = {};
         state.order = [];
@@ -474,6 +703,8 @@
         log('joined room ' + msg.room + ' with ' + msg.members.length + ' member(s), ' + msg.ops.length + ' op(s) in log');
         state.replayTruncated = msg.truncated === true;
         state.fromSeq = typeof msg.fromSeq === 'number' ? msg.fromSeq : 0;
+        state.replaySeq = typeof msg.seq === 'number' ? msg.seq : null;
+        state.replayContext = { ws: state.ws, project: state.shadows, path: state.hostInfoKnown ? state.projectPath : null };
         if (state.replayTruncated) {
           state.catchupLogged = true;
           state.catchupState = 'held-truncated';
@@ -490,15 +721,28 @@
           state.replayApplied = false;
         }
         flushLogBuffer();
-        flushOutbox();
-        if (state.compId) send({ t: 'selection', compId: state.compId, layers: state.selection });
+        resumeDelivery();
+        if (!state.hostInfoKnown) fetchHostInfo(null);
+        if (state.compId) announceSelection();
+        kickCycle(0);
         renderMembers();
         renderBase();
         pushPeersToNative();
         return;
       }
       case 'base': {
-        state.baseInfo = sanitizeBase(msg.base);
+        var previousBase = state.baseInfo;
+        var nextBase = sanitizeBase(msg.base);
+        var changedBase = nextBase && (!previousBase || nextBase.hash !== previousBase.hash || nextBase.seq !== previousBase.seq);
+        state.baseInfo = nextBase;
+        if (changedBase && !(state.continuingReplay && currentResume(state.resume)) && (state.pendingReplay || state.replayTruncated || state.fetchingHistory)) {
+          if (!baseActionBusy()) resetBaselines();
+          state.pendingReplay = null;
+          state.replayApplied = false;
+          state.replayTruncated = false;
+          state.baseHold = 'the room has a newer base; get the latest base';
+        }
+        if (nextBase && typeof nextBase.seq === 'number') state.baseSeq = nextBase.seq;
         renderBase();
         log(msg.base ? 'room base project: ' + msg.base.name + ' (by ' + msg.base.uploadedBy + ')' : 'room base project cleared');
         tryApplyReplay();
@@ -573,20 +817,38 @@
   }
 
   function localProjectOnBase() {
+    if (state.continuingReplay && currentResume(state.resume)) return true;
     if (!state.baseInfo || !state.baseInfo.name) return false;
     if (state.baseOpened) return true;
     return state.projectName === state.baseInfo.name;
   }
 
+  function currentResume(resume) {
+    return !!(resume && state.session && resume.project === state.shadows && resume.path === state.projectPath &&
+      resume.url === state.session.url && resume.room === state.session.room);
+  }
+
+  function rememberReplay() {
+    if (!state.connected || !state.deliveryReady || state.baseHold || !state.session || state.pendingReplay) return;
+    if (state.baseSeq !== 0 && !localProjectOnBase()) return;
+    state.resume = { token: state.roomToken, after: state.replayAfter, project: state.shadows, path: state.projectPath,
+      url: state.session.url, room: state.session.room };
+  }
+
   function tryApplyReplay() {
+    if (state.baseHold) return;
+    if (state.deliveryError || (state.connected && !state.deliveryReady)) return;
     if (!state.pendingReplay) return;
+    var ctx = state.replayContext;
+    if (ctx && (!state.connected || !currentSocket(ctx.ws))) return;
+    if (ctx && !currentRequest(ctx)) {
+      state.baseHold = 'the project changed during catch-up; get the current base';
+      log('sync held: ' + state.baseHold);
+      return;
+    }
     if (state.pendingReplay.length === 0 && !state.replayTruncated) return;
     if (state.replayApplied) return;
     if (!inAE || !cs) return;
-    if (state.replayTruncated) {
-      state.catchupState = 'held-truncated';
-      return;
-    }
     if (!localProjectOnBase()) {
       state.catchupState = 'held-base';
       if (!state.catchupLogged) {
@@ -600,13 +862,28 @@
       fetchMissingHistory();
       return;
     }
+    if (!completeHistory(state.pendingReplay, state.replayAfter, state.replaySeq)) {
+      state.catchupState = 'held-incomplete';
+      log('catch-up held: room history has a gap - ask the host to share a fresh base');
+      return;
+    }
     state.replayApplied = true;
     state.catchupState = 'applied';
     var logged = state.pendingReplay;
     state.pendingReplay = null;
     log('catching up: applying ' + logged.length + ' earlier edit(s)');
     var applied = 0;
-    var failed = 0;
+    // Seen writes already exist in AE; older values must not overwrite them.
+    var knownAt = {};
+    for (var k = 0; k < logged.length; k++) {
+      var known = logged[k] && logged[k].op;
+      if (!known || !state.seenOps[known.opId]) continue;
+      var list = innerOps(known);
+      for (var j = 0; j < list.length; j++) {
+        var key = Sync && Sync.targetKey(list[j]);
+        if (key) knownAt[key] = k;
+      }
+    }
     for (var i = 0; i < logged.length; i++) {
       var entry = logged[i];
       var op = entry && entry.op ? entry.op : entry;
@@ -614,10 +891,11 @@
       if (state.seenOps[op.opId]) continue;
       state.seenOps[op.opId] = 1;
       if (!Sync) continue;
-      applied += acceptRemote(op);
+      applied += acceptRemote(op, entry.author, knownAt, i);
     }
     kickCycle(0);
     state.lastChangeAt = Date.now();
+    rememberReplay();
     log('catch-up: ' + applied + ' edit(s) applied');
   }
 
@@ -690,11 +968,13 @@
       hash: typeof b.hash === 'string' ? b.hash : '',
       uploadedBy: typeof b.uploadedBy === 'string' ? b.uploadedBy : 'unknown',
       uploadedAt: Number(b.uploadedAt) || 0,
-      aeVersion: typeof b.aeVersion === 'string' ? b.aeVersion : ''
+      aeVersion: typeof b.aeVersion === 'string' ? b.aeVersion : '',
+      seq: typeof b.seq === 'number' && b.seq >= 0 && Math.floor(b.seq) === b.seq ? b.seq : null
     };
   }
 
   function renderBase() {
+    renderBaseControls();
     var el = $('baseText');
     if (!el) return;
     if (state.baseInfo && state.baseInfo.name) {
@@ -707,10 +987,27 @@
   // One-line live view of the sync pipeline. Kept deliberately compact so it can
   // sit above the log without stealing space; window.vynkHealth() has the detail.
   function renderHealth() {
+    renderBaseControls();
     var el = $('healthEl');
     if (!el) return;
+    if (state.deliveryError) {
+      el.textContent = 'sync paused: ' + state.deliveryError + ' - save project, then leave room';
+      return;
+    }
+    if (state.baseHold) {
+      el.textContent = 'sync held: ' + state.baseHold;
+      return;
+    }
+    if (state.baseJob) {
+      el.textContent = 'base: ' + (state.baseJob.kind === 'share' ? 'preparing/sharing' : 'downloading/opening');
+      return;
+    }
     if (!state.connected) {
-      el.textContent = 'sync: offline' + (state.outbox.length ? ' - ' + state.outbox.length + ' unsent' : '');
+      el.textContent = 'sync: offline' + (state.outbox.length ? ' - ' + state.outbox.length + ' unconfirmed' : '');
+      return;
+    }
+    if (!state.deliveryReady) {
+      el.textContent = 'sync: checking project and saved edits';
       return;
     }
     var age = state.lastRxAt ? Math.round((Date.now() - state.lastRxAt) / 1000) : 0;
@@ -748,49 +1045,83 @@
   };
 
   function relayHttpBase() {
-    var s = ($('serverInput').value || '').trim();
+    var s = (state.connected && state.ws ? state.ws.url : $('serverInput').value || '').trim();
     s = s.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
     s = s.replace(/\/+$/, '').replace(/\/ws$/i, '');
     return s;
   }
 
+  function readHttpResponse(res, done) {
+    var chunks = [];
+    res.on('data', function (c) { chunks.push(c); });
+    res.on('error', function (err) { done(err); });
+    res.on('aborted', function () { if (!res.complete) done(new Error('response aborted')); });
+    res.on('close', function () { if (!res.complete) done(new Error('response closed before completion')); });
+    res.on('end', function () {
+      if (!res.complete) { done(new Error('incomplete response')); return; }
+      done(null, res.statusCode, Buffer.concat(chunks));
+    });
+  }
+
+  function httpTarget(pathAndQuery) {
+    var url = require('url');
+    var target = new url.URL(relayHttpBase() + pathAndQuery);
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') throw new Error('bad server url');
+    return {
+      protocol: target.protocol,
+      hostname: target.hostname.replace(/^\[|\]$/g, ''),
+      port: target.port,
+      path: target.pathname + target.search,
+      auth: target.username || target.password ? decodeURIComponent(target.username) + ':' + decodeURIComponent(target.password) : undefined
+    };
+  }
+
   // Stream the local project file to the relay (no full-file buffering).
   function httpPutFile(pathAndQuery, srcPath, cb) {
     var u;
-    try { u = new (require('url').URL)(relayHttpBase() + pathAndQuery); }
+    try { u = httpTarget(pathAndQuery); }
     catch (e) { cb(new Error('bad server url')); return; }
     var mod = u.protocol === 'https:' ? require('https') : require('http');
     var fs = require('fs');
     var stat;
     try { stat = fs.statSync(srcPath); } catch (e2) { cb(e2); return; }
     var finished = false;
-    function done(err, status, buf) { if (finished) return; finished = true; cb(err, status, buf); }
-    var req = mod.request(u, { method: 'PUT', headers: { 'content-type': 'application/octet-stream', 'content-length': String(stat.size) } }, function (res) {
-      var chunks = [];
-      res.on('data', function (c) { chunks.push(c); });
-      res.on('end', function () { done(null, res.statusCode, Buffer.concat(chunks)); });
+    var rs = null;
+    function done(err, status, buf) {
+      if (finished) return;
+      finished = true;
+      if (err) { if (rs) rs.destroy(); if (req) req.destroy(); }
+      cb(err, status, buf);
+    }
+    u.method = 'PUT';
+    u.headers = { 'content-type': 'application/octet-stream', 'content-length': String(stat.size) };
+    var req = mod.request(u, function (res) {
+      readHttpResponse(res, done);
     });
     req.on('error', function (e3) { done(e3); });
-    req.later(120000, function () { req.destroy(new Error('upload timed out')); });
-    var rs = fs.createReadStream(srcPath);
+    req.setTimeout(120000, function () { req.destroy(new Error('upload timed out')); });
+    rs = fs.createReadStream(srcPath);
     rs.on('error', function (e4) { done(e4); });
     rs.pipe(req);
   }
 
   function httpGetText(pathAndQuery, cb) {
     var u;
-    try { u = new (require('url').URL)(relayHttpBase() + pathAndQuery); }
+    try { u = httpTarget(pathAndQuery); }
     catch (e) { cb(new Error('bad server url')); return; }
     var mod = u.protocol === 'https:' ? require('https') : require('http');
     var finished = false;
-    function done(err, status, text) { if (finished) return; finished = true; cb(err, status, text); }
-    var req = mod.request(u, { method: 'GET' }, function (res) {
-      var chunks = [];
-      res.on('data', function (c) { chunks.push(c); });
-      res.on('end', function () { done(null, res.statusCode, Buffer.concat(chunks).toString('utf8')); });
+    function done(err, status, buf) {
+      if (finished) return;
+      finished = true;
+      if (err && req) req.destroy();
+      cb(err, status, buf ? buf.toString('utf8') : '');
+    }
+    var req = mod.request(u, function (res) {
+      readHttpResponse(res, done);
     });
     req.on('error', function (e2) { done(e2); });
-    req.later(60000, function () { req.destroy(new Error('history request timed out')); });
+    req.setTimeout(60000, function () { req.destroy(new Error('history request timed out')); });
     req.end();
   }
 
@@ -798,19 +1129,30 @@
   // giving up on catch-up. Only runs when the local project is provably on the
   // shared base, so the ops are safe to apply.
   var HISTORY_FETCH_LIMIT = 2000;
+  function completeHistory(ops, after, through) {
+    var next = after + 1;
+    for (var i = 0; i < ops.length; i++) {
+      if (!ops[i] || ops[i].seq !== next || !ops[i].op || !ops[i].op.opId) return false;
+      next++;
+    }
+    return typeof through !== 'number' || next === through + 1;
+  }
+
   function fetchMissingHistory() {
     if (state.fetchingHistory || state.historyFetchTried) return;
-    if (!state.roomToken || !state.baseSeq || !state.fromSeq) {
+    if (!state.roomToken || !state.fromSeq) {
       log('cannot recover the missing history - ask the host to "share base" again');
       return;
     }
     var before = state.fromSeq;
+    var ctx = requestContext();
     state.fetchingHistory = true;
     state.historyFetchTried = true;
-    log('history gap: fetching edits ' + (state.baseSeq + 1) + '-' + (before - 1) + ' from the relay...');
+    log('history gap: fetching edits ' + (state.replayAfter + 1) + '-' + (before - 1) + ' from the relay...');
     var q = '/ops?token=' + encodeURIComponent(state.roomToken) +
-      '&after=' + state.baseSeq + '&before=' + before + '&limit=' + (HISTORY_FETCH_LIMIT + 1);
+      '&after=' + state.replayAfter + '&before=' + before + '&limit=' + (HISTORY_FETCH_LIMIT + 1);
     httpGetText(q, function (err, status, text) {
+      if (!currentRequest(ctx)) return;
       state.fetchingHistory = false;
       if (err || status !== 200) {
         log('history fetch failed: ' + (err ? err.message : 'HTTP ' + status) + ' - ask the host to "share base" again');
@@ -818,10 +1160,11 @@
       }
       var lines = String(text || '').split('\n');
       var ops = [];
+      var malformed = false;
       for (var i = 0; i < lines.length; i++) {
         if (!lines[i]) continue;
         var entry;
-        try { entry = JSON.parse(lines[i]); } catch (e) { continue; }
+        try { entry = JSON.parse(lines[i]); } catch (e) { malformed = true; continue; }
         if (entry && entry.seq && entry.op) ops.push(entry);
       }
       if (ops.length === 0) {
@@ -830,6 +1173,10 @@
       }
       if (ops.length > HISTORY_FETCH_LIMIT) {
         log('history gap is too large to replay (' + ops.length + '+) - ask the host to "share base" again');
+        return;
+      }
+      if (malformed || !completeHistory(ops, state.replayAfter, before - 1)) {
+        log('history fetch is incomplete - ask the host to share a fresh base');
         return;
       }
       state.replayTruncated = false;
@@ -841,82 +1188,273 @@
   }
 
   // Stream the relay's base file to disk (no full-file buffering).
-  function httpGetToFile(pathAndQuery, destPath, cb) {    var u;
-    try { u = new (require('url').URL)(relayHttpBase() + pathAndQuery); }
+  function httpGetToFile(pathAndQuery, destPath, cb) {
+    var u;
+    try { u = httpTarget(pathAndQuery); }
     catch (e) { cb(new Error('bad server url')); return; }
     var mod = u.protocol === 'https:' ? require('https') : require('http');
     var fs = require('fs');
     var crypto = require('crypto');
     var hash = crypto.createHash('sha256');
     var finished = false;
-    function done(err, digest) { if (finished) return; finished = true; cb(err, digest); }
-    var req = mod.request(u, { method: 'GET' }, function (res) {
+    var output = null;
+    function done(err, digest) {
+      if (finished) return;
+      finished = true;
+      if (err) { if (output) output.destroy(); if (req) req.destroy(); }
+      cb(err, digest);
+    }
+    var req = mod.request(u, function (res) {
       if (res.statusCode !== 200) { res.resume(); done(new Error('HTTP ' + res.statusCode)); return; }
+      res.on('error', function (err) { done(err); });
+      res.on('aborted', function () { if (!res.complete) done(new Error('download aborted')); });
+      res.on('close', function () { if (!res.complete) done(new Error('download closed before completion')); });
       res.on('data', function (c) { hash.update(c); });
-      var ws = fs.createWriteStream(destPath);
-      res.pipe(ws);
-      ws.on('finish', function () { done(null, hash.digest('hex').slice(0, 16)); });
-      ws.on('error', function (e) { done(e); });
+      output = fs.createWriteStream(destPath);
+      output.on('finish', function () {
+        if (!res.complete) { done(new Error('incomplete download')); return; }
+        done(null, hash.digest('hex').slice(0, 16));
+      });
+      output.on('error', function (e) { done(e); });
+      res.pipe(output);
     });
     req.on('error', function (e2) { done(e2); });
-    req.later(120000, function () { req.destroy(new Error('download timed out')); });
+    req.setTimeout(120000, function () { req.destroy(new Error('download timed out')); });
     req.end();
   }
 
   function shareBase() {
     if (!state.connected || !state.roomToken) { log('join a room first'); return; }
+    if (state.deliveryError || state.outbox.length > 0) { log('wait for edit recovery before sharing a base'); return; }
     if (!state.projectPath) { log('save your project first (no file path yet)'); return; }
-    var pathmod;
-    try { pathmod = require('path'); } catch (e) { log('node path unavailable'); return; }
-    var name = pathmod.basename(state.projectPath);
-    var by = ($('nameInput').value || '').trim() || 'anon';
-    var q = '/base?token=' + encodeURIComponent(state.roomToken) + '&name=' + encodeURIComponent(name) + '&by=' + encodeURIComponent(by) + '&ae=' + encodeURIComponent(hostVersion || '');
-    log('sharing base project (' + name + ')...');
-    httpPutFile(q, state.projectPath, function (err, status, body) {
-      if (err) { log('share failed: ' + err.message); return; }
-      if (status !== 200) { log('share failed: HTTP ' + status + ' ' + String(body).slice(0, 120)); return; }
-      try { state.baseInfo = sanitizeBase(JSON.parse(String(body)).base); } catch (e3) {}
-      renderBase();
-      log('base shared: ' + name);
-    });
+    if (!inAE || !cs) { log('base sharing only works inside After Effects'); return; }
+    if (!state.baseCheckpoint) { log('update the relay before sharing a base'); return; }
+    if (state.baseHold || state.pendingReplay || state.replayTruncated) { log('open the current room base before sharing another'); return; }
+    if (state.baseJob) { log('a base operation is already running'); return; }
+    var job = newBaseJob('share');
+    state.baseJob = job;
+    renderHealth();
+    state.sweeping = true;
+    state.sweepIdx = 0;
+    state.sweepLayer = 0;
+    state.roundStartedAt = Date.now();
+    log('preparing a saved base project...');
+    kickCycle(0);
+    checkBaseJob(job);
   }
 
   function getBase() {
     if (!state.connected || !state.roomToken) { log('join a room first'); return; }
+    if (state.deliveryError || state.outbox.length > 0) { log('wait for edit recovery before opening a base'); return; }
     if (!state.baseInfo) { log('no base shared yet - ask the host to share it'); return; }
     if (!inAE || !cs) { log('base download only works inside After Effects'); return; }
-    var baseVer = state.baseInfo.aeVersion ? String(state.baseInfo.aeVersion) : '';
-    var myMajor = /(\d+)/.exec(hostVersion || '');
-    var baseMajor = /(\d+)/.exec(baseVer);
-    var verWarn = '';
-    if (myMajor && baseMajor && Number(myMajor[1]) < Number(baseMajor[1])) {
-      verWarn = '\n\nWARNING: this base was saved by a NEWER After Effects (' + baseVer + '); your AE ' + hostVersion + ' may not open it.';
-    }
-    if (typeof window.confirm === 'function' && !window.confirm('Open the shared base project "' + state.baseInfo.name + '"?' + verWarn + '\n\nYour current (unsaved) project will be replaced.')) return;
-    var fs, pathmod;
-    try { fs = require('fs'); pathmod = require('path'); } catch (e) { log('node fs unavailable'); return; }
-    var dir = (process.env.TEMP || '.') + '\\Vynk';
-    try { fs.mkdirSync(dir, { recursive: true }); } catch (e2) {}
-    var name = (state.baseInfo && state.baseInfo.name) || 'base.aep';
-    var dest = pathmod.join(dir, name);
+    if (!state.baseCheckpoint || typeof state.baseInfo.seq !== 'number') { log('ask the host to share a fresh base using the current panel and relay'); return; }
+    if (state.baseJob) { log('a base operation is already running'); return; }
+    var job = newBaseJob('get');
+    job.base = state.baseInfo;
+    try { stageBaseFile(job, job.base.name); }
+    catch (e) { log('download failed: ' + e.message); return; }
+    state.baseJob = job;
+    setBasePhase(job, 'download');
     log('downloading base project...');
-    httpGetToFile('/base?token=' + encodeURIComponent(state.roomToken), dest, function (err, digest) {
-      if (err) { log('download failed: ' + err.message); return; }
-      if (state.baseInfo && state.baseInfo.hash && digest && digest !== state.baseInfo.hash) {
-        log('WARNING: base project hash mismatch (download may be corrupt) - not opening');
+    httpGetToFile('/base?token=' + encodeURIComponent(job.token), job.dest, function (err, digest) {
+      if (!currentBaseJob(job)) { finishBaseJob(job); return; }
+      if (state.baseInfo !== job.base) { finishBaseJob(job, 'base changed during download - get the latest base'); return; }
+      if (err) { finishBaseJob(job, 'download failed: ' + err.message); return; }
+      if (!digest || digest !== job.base.hash) { finishBaseJob(job, 'base hash mismatch - download again'); return; }
+      setBasePhase(job, 'wait');
+      job.until = Date.now() + 120000;
+      checkBaseJob(job);
+    });
+  }
+
+  function newBaseJob(kind) {
+    return { kind: kind, phase: 'wait', ctx: requestContext(), session: state.session, token: state.roomToken, until: Date.now() + 120000 };
+  }
+
+  function currentBaseJob(job) {
+    return state.baseJob === job && currentRequest(job.ctx);
+  }
+
+  function baseActionBusy() {
+    var job = state.baseJob;
+    return job && (job.phase === 'save' || job.phase === 'check' || job.phase === 'open');
+  }
+
+  function renderBaseControls() {
+    var busy = !!baseActionBusy();
+    if ($('connectBtn')) $('connectBtn').disabled = busy;
+    if ($('genBtn')) $('genBtn').disabled = busy;
+    if ($('shareBaseBtn')) $('shareBaseBtn').disabled = busy || !!state.baseJob;
+    if ($('getBaseBtn')) $('getBaseBtn').disabled = busy || !!state.baseJob;
+  }
+
+  function setBasePhase(job, phase) {
+    job.phase = phase;
+    renderHealth();
+  }
+
+  function stageBaseFile(job, name) {
+    var fs = require('fs');
+    var pathmod = require('path');
+    var root = pathmod.join(process.env.TEMP || '.', 'Vynk');
+    try { fs.mkdirSync(root); } catch (e) { if (e.code !== 'EEXIST') throw e; }
+    job.dir = pathmod.join(root, randomHex(12));
+    fs.mkdirSync(job.dir);
+    name = pathmod.basename(name || 'base.aep');
+    if (!name || name === '.' || name === '..') name = 'base.aep';
+    job.dest = pathmod.join(job.dir, name);
+    job.name = name;
+  }
+
+  function cleanupBaseFile(job) {
+    if (!job.dest || job.keep) return;
+    try {
+      var fs = require('fs');
+      fs.unlink(job.dest, function () { fs.rmdir(job.dir, function () {}); });
+    } catch (e) {}
+  }
+
+  function finishBaseJob(job, message) {
+    var owned = state.baseJob === job;
+    if (owned) state.baseJob = null;
+    if (job.timer) clearTimeout(job.timer);
+    cleanupBaseFile(job);
+    if (!owned || stale()) return;
+    renderHealth();
+    if (message) log(message);
+    kickCycle(0);
+    if (wantConnected && !state.ws) connect(job.session);
+  }
+
+  function cancelBaseJob() {
+    var job = state.baseJob;
+    if (!job) return;
+    state.baseJob = null;
+    if (job.timer) clearTimeout(job.timer);
+    if (job.phase === 'wait' || job.phase === 'check') cleanupBaseFile(job);
+    if (!stale()) renderBaseControls();
+  }
+
+  function checkBaseJob(job) {
+    job.timer = null;
+    if (!currentBaseJob(job)) { finishBaseJob(job); return; }
+    if (job.phase !== 'wait') return;
+    if (Date.now() > job.until) { finishBaseJob(job, 'base preparation timed out - try again when sync is quiet'); return; }
+    if (state.deliveryError) { finishBaseJob(job, 'base operation stopped while edit recovery is paused'); return; }
+    if (job.kind === 'get' && state.baseInfo !== job.base) { finishBaseJob(job, 'base changed - get the latest base'); return; }
+    var ready = !state.cycleBusy && state.outbox.length === 0 &&
+      ((job.kind === 'get' && state.baseHold) || (!state.stampJob && state.inbox.length === 0));
+    if (job.kind === 'share') ready = ready && state.rev >= 0 && !state.sweeping && !state.trailOn && !state.chase && !hasKeys(state.parked) &&
+      !state.readQueue.length && !hasKeys(state.fullNext) && !hasKeys(state.deepQueue) && !hasKeys(state.force) && quietFor() >= 2000;
+    if (!ready) { job.timer = later(function () { checkBaseJob(job); }, 100); return; }
+    if (job.kind === 'share') captureBase(job);
+    else checkBaseOpen(job);
+  }
+
+  function captureBaseScript(source, rev, dest) {
+    return '(function(){try{var src=new File(' + JSON.stringify(source) + ');' +
+      'if(!app.project.file||app.project.file.fsName!==src.fsName)return "project changed";' +
+      'if(app.project.revision!==' + rev + ')return "retry";' +
+      'app.project.save();if(!app.project.file.copy(' + JSON.stringify(dest) + '))return "copy failed";' +
+      'return "captured";}catch(e){return "ERR "+e.toString();}})()';
+  }
+
+  function captureBase(job) {
+    try { if (!job.dest) stageBaseFile(job, require('path').basename(state.projectPath)); }
+    catch (e) { finishBaseJob(job, 'base capture failed: ' + e.message); return; }
+    job.seq = state.relaySeq;
+    setBasePhase(job, 'save');
+    evalBaseScript(job, captureBaseScript(state.projectPath, state.rev, job.dest), function (res) {
+      if (!currentBaseJob(job)) { finishBaseJob(job); return; }
+      if (res === 'retry') {
+        setBasePhase(job, 'wait');
+        kickCycle(0);
+        job.timer = later(function () { checkBaseJob(job); }, 100);
         return;
       }
-      var jsx = 'new File(' + JSON.stringify(String(dest).replace(/\\/g, '/')) + ')';
-      cs.evalScript('(function(){try{app.open(' + jsx + ');return "opened";}catch(e){return "ERR "+e.toString();}})()', function (res) {
-        if (res === 'opened') {
-          resetBaselines();
-          state.baseOpened = true;
-          log('base opened - sync baseline reset');
-          tryApplyReplay();
-        }
-        log('open base: ' + res + ' (' + dest + ')');
-      });
+      if (res !== 'captured') { finishBaseJob(job, 'base capture failed: ' + res); return; }
+      setBasePhase(job, 'upload');
+      kickCycle(0);
+      uploadBase(job);
     });
+  }
+
+  function evalBaseScript(job, script, cb) {
+    try { cs.evalScript(script, cb); }
+    catch (e) { finishBaseJob(job, 'project file operation failed: ' + e.message); }
+  }
+
+  function uploadBase(job) {
+    var q = '/base?token=' + encodeURIComponent(job.token) + '&name=' + encodeURIComponent(job.name) +
+      '&seq=' + job.seq + '&by=' + encodeURIComponent(job.session ? job.session.name : 'anon') + '&ae=' + encodeURIComponent(hostVersion || '');
+    httpPutFile(q, job.dest, function (err, status, body) {
+      if (!currentBaseJob(job)) { finishBaseJob(job); return; }
+      if (err) { finishBaseJob(job, 'share failed: ' + err.message); return; }
+      if (status !== 200) { finishBaseJob(job, 'share failed: HTTP ' + status); return; }
+      var base = null;
+      try { base = sanitizeBase(JSON.parse(String(body)).base); } catch (e) {}
+      if (!base || base.seq !== job.seq) { finishBaseJob(job, 'share failed: relay did not confirm the snapshot checkpoint'); return; }
+      state.baseInfo = base;
+      state.baseSeq = base.seq;
+      state.baseOpened = true;
+      renderBase();
+      finishBaseJob(job, 'base shared: ' + base.name);
+    });
+  }
+
+  function checkBaseOpen(job) {
+    setBasePhase(job, 'check');
+    evalBaseScript(job, '(function(){try{return JSON.stringify({rev:app.project.revision,path:app.project.file?app.project.file.fsName:""});}catch(e){return "ERR "+e.toString();}})()', function (res) {
+      if (!currentBaseJob(job)) { finishBaseJob(job); return; }
+      if (state.baseInfo !== job.base) { finishBaseJob(job, 'base changed - get the latest base'); return; }
+      var info;
+      try { info = JSON.parse(res); } catch (e) {}
+      if (!info || typeof info.rev !== 'number' || typeof info.path !== 'string') { finishBaseJob(job, 'could not check the current project'); return; }
+      var warning = '';
+      var mine = /(\d+)/.exec(hostVersion || '');
+      var theirs = /(\d+)/.exec(job.base.aeVersion || '');
+      if (mine && theirs && Number(mine[1]) < Number(theirs[1])) warning = '\n\nThis base was saved by newer After Effects (' + job.base.aeVersion + ') and may not open here.';
+      var confirmed = false;
+      try {
+        if (typeof window.confirm === 'function') confirmed = window.confirm('Open the shared base project "' + job.base.name + '" and catch up with the room?' + warning + '\n\nYour current (unsaved) project will be replaced.') === true;
+      } catch (e2) {}
+      if (!confirmed) { finishBaseJob(job, 'base open cancelled'); return; }
+      setBasePhase(job, 'open');
+      evalBaseScript(job, openBaseScript(info, job.dest), function (opened) { baseOpened(job, opened); });
+    });
+  }
+
+  function openBaseScript(info, dest) {
+    return '(function(){try{var path=app.project.file?app.project.file.fsName:"";' +
+      'if(path!==' + JSON.stringify(info.path) + '||app.project.revision!==' + info.rev + ')return "project changed";' +
+      'var dest=new File(' + JSON.stringify(dest) + ');app.open(dest);' +
+      'if(!app.project.file||app.project.file.fsName!==dest.fsName)return "cancelled";' +
+      'return JSON.stringify({opened:true,path:app.project.file.fsName});}catch(e){return "ERR "+e.toString();}})()';
+  }
+
+  function baseOpened(job, result) {
+    var info;
+    try { info = JSON.parse(result); } catch (e) {}
+    if (info && info.opened) job.keep = true;
+    if (stale() || state.baseJob !== job) { finishBaseJob(job); return; }
+    if (!info || !info.opened) { finishBaseJob(job, 'open base: ' + result); return; }
+    state.baseJob = null;
+    resetBaselines();
+    state.projectPath = info.path;
+    state.cyclePath = info.path;
+    state.projectName = job.base.name;
+    state.hostInfoKnown = true;
+    state.seenOps = {};
+    state.seenOpCount = 0;
+    state.pendingReplay = null;
+    state.replayApplied = false;
+    state.replayTruncated = false;
+    state.expectedBase = { hash: job.base.hash, seq: job.base.seq, token: job.token };
+    state.baseHold = 'loading fresh room history';
+    state.everConnected = false;
+    log('base opened - requesting fresh room history');
+    connect(job.session);
   }
 
   function renderCanvas() {
@@ -1141,23 +1679,33 @@
   }
 
   function fetchHostInfo(cb) {
+    if (baseActionBusy()) { if (cb) cb(false); return; }
     if (!inAE || !cs) {
       if (cb) cb(false);
       return;
     }
+    var ctx = requestContext();
     try {
       cs.evalScript('(typeof collab === "undefined") ? "null" : collab.getHostInfo()', function (res) {
+        if (baseActionBusy()) { if (cb) cb(false); return; }
+        if (!currentRequest(ctx)) {
+          if (cb) cb(false);
+          return;
+        }
         var ok = false;
         if (res && res !== 'null' && res.indexOf('EvalScript error') !== 0) {
           try {
             var info = JSON.parse(res);
             var newPath = info.projectPath || '';
+            if (state.outbox.length > 0 && state.outboxProject !== newPath) pauseDelivery('saved edits belong to another project');
             if (state.projectPath && newPath && newPath !== state.projectPath) {
               log('project changed: ' + (info.projectName || '?') + ' - resetting sync baseline');
               resetBaselines();
             }
             state.projectName = info.projectName || state.projectName || '';
-            state.projectPath = newPath || state.projectPath || '';
+            state.projectPath = newPath;
+            state.hostInfoKnown = true;
+            resumeDelivery();
             tryApplyReplay();
             ok = true;
           } catch (e) {}
@@ -1219,6 +1767,17 @@
   // changes (e.g. after opening the shared base), or the next poll would diff
   // the new project against stale state and emit bogus ops.
   function resetBaselines() {
+    cancelBaseJob();
+    if (state.everConnected && state.pendingReplay && state.replayContext) state.baseHold = 'the project changed during catch-up; get the current base';
+    state.resume = null;
+    state.continuingReplay = false;
+    state.pollGeneration++;
+    if (state.cycleTimer) clearTimeout(state.cycleTimer);
+    state.cycleTimer = null;
+    state.cycleBusy = false;
+    state.rev = -1;
+    state.fetchingHistory = false;
+    state.historyFetchTried = false;
     state.compId = null;
     state.compName = null;
     state.compSid = null;
@@ -1245,6 +1804,7 @@
     state.selection = [];
     state.baseOpened = false;
     state.lastChangeAt = Date.now();
+    kickCycle(0);
   }
 
   function randomHex(len) {
@@ -1293,11 +1853,7 @@
 
   $('connectBtn').addEventListener('click', function () {
     if (state.connected) {
-      wantConnected = false;
-      state.outbox = [];
-      persistOutbox();
-      disconnect();
-      $('connectBtn').textContent = 'join';
+      leaveRoom();
     } else {
       connect();
       $('connectBtn').textContent = 'leave';
@@ -1365,7 +1921,7 @@
 
   // Remote ops are queued as groups: one teammate gesture is applied in one
   // After Effects call, so its side effects never surface half-way.
-  function acceptRemote(op, author) {
+  function acceptRemote(op, author, knownAt, replayIndex) {
     var list = innerOps(op);
     var group = [];
     for (var i = 0; i < list.length; i++) {
@@ -1373,9 +1929,8 @@
       if (!inner || !inner.target || !Sync.isKind(inner.kind)) continue;
       if (author) inner._from = author;
       var key = Sync.targetKey(inner);
-      // Our own unacknowledged edit to the same value is later in relay
-      // order, so it wins everywhere; applying this one here would diverge.
-      if (key && state.pending[key]) {
+      // Pending local edits and later seen writes supersede this value.
+      if (key && (state.pending[key] || (knownAt && knownAt[key] >= replayIndex))) {
         state.lwwSkips++;
         continue;
       }
@@ -1386,19 +1941,17 @@
   }
 
   function onRemoteOp(msg) {
+    if (typeof msg.seq === 'number' && msg.seq > state.relaySeq) state.relaySeq = msg.seq;
     var op = msg.op;
     if (!op || !Sync) return;
-    if (msg.author === state.selfId) {
-      delete state.awaiting[op.opId];
-      var own = innerOps(op);
-      for (var i = 0; i < own.length; i++) {
-        var key = Sync.targetKey(own[i]);
-        if (key && state.pending[key]) {
-          if (--state.pending[key] <= 0) delete state.pending[key];
-        }
-      }
-      return;
+    var held = state.pendingReplay && !state.replayApplied && op.kind !== 'need' && op.kind !== 'sum' && typeof msg.seq === 'number';
+    if (held && (typeof state.replaySeq !== 'number' || msg.seq > state.replaySeq)) {
+      state.pendingReplay.push({ seq: msg.seq, author: msg.author, ts: msg.ts, op: op });
+      state.replaySeq = msg.seq;
     }
+    if (acknowledge(op.opId) || msg.author === state.selfId) return;
+    if (state.deliveryError || state.baseHold) return;
+    if (held) { tryApplyReplay(); return; }
     if (op.opId) {
       if (state.seenOps[op.opId]) return;
       state.seenOps[op.opId] = 1;
@@ -1429,7 +1982,6 @@
 
   function sendOps(ops) {
     state.lastSyncAt = Date.now();
-    var live = state.ws && state.ws.readyState === 1;
     var keys = {};
     var any = false;
     var i;
@@ -1438,7 +1990,6 @@
       if (!key) continue;
       keys[key] = 1;
       any = true;
-      if (live) state.pending[key] = (state.pending[key] || 0) + 1;
     }
     // Anything still queued for a value we are now sending is older in relay
     // order than our edit, so it must not be applied after it.
@@ -1459,7 +2010,6 @@
     function flush() {
       if (chunk.length === 0) return;
       var wire = chunk.length === 1 ? chunk[0] : { opId: chunk[0].opId + 'b', kind: 'batch', target: { comp: chunk[0].target.comp }, value: { ops: chunk } };
-      if (live) state.awaiting[wire.opId] = 1;
       send({ t: 'op', op: wire });
       chunk = [];
       size = 0;
@@ -1547,6 +2097,7 @@
   }
 
   function runCycle() {
+    if (state.deliveryError || state.baseHold || baseActionBusy() || (state.connected && !state.deliveryReady)) return;
     if (state.cycleBusy) {
       // After Effects answers scripts strictly in order, so asking again while
       // it is busy (a long render, a big paste) would only stack work up.
@@ -1589,7 +2140,6 @@
           sets.ops[si]._arb = !reply ? 'custom data: no answer from the Vynk plug-in' : reply[2] === 'ok' ? '' : 'custom data: ' + reply[2];
         }
         if (stale() || state.pollGeneration !== gen) {
-          state.cycleBusy = false;
           return;
         }
         evalCycle();
@@ -1602,8 +2152,8 @@
     cs.evalScript(
       '(typeof vynkSync === "undefined") ? "nosync" : vynkSync.cycle(' + JSON.stringify(JSON.stringify(req)) + ')',
       function (res) {
-        state.cycleBusy = false;
         if (stale() || state.pollGeneration !== gen) return;
+        state.cycleBusy = false;
         var out = null;
         if (typeof res === 'string' && res.charAt(0) === '{') {
           try { out = JSON.parse(res); } catch (e) { out = null; }
@@ -1695,8 +2245,8 @@
         if (customDataNeeded(out, ops.slice(0, done))) {
           state.cycleBusy = true;
           customDataPass(out, ops.slice(0, done), function () {
-            state.cycleBusy = false;
             if (stale() || state.pollGeneration !== gen) return;
+            state.cycleBusy = false;
             finish();
           });
           return;
@@ -1885,6 +2435,7 @@
     if (state.rev >= 0 && typeof out.revBefore === 'number' && out.revBefore >= 0 && out.revBefore < state.rev) switched = true;
     state.cyclePath = path;
     if (switched) {
+      if (state.outbox.length > 0) pauseDelivery('the project changed with unconfirmed edits');
       state.resetPending = true;
       state.rev = -1;
     }
@@ -2163,7 +2714,7 @@
   // Nothing of ours is unacknowledged and nothing of theirs is unapplied.
   // Repairs only ever compare two peers that are both in this state.
   function caughtUp() {
-    return state.inbox.length === 0 && !state.cycleBusy && !state.stampJob && !hasKeys(state.awaiting) && quietFor() >= REPAIR_TICK_MS;
+    return !state.deliveryError && !state.baseHold && !state.pendingReplay && !state.replayTruncated && !state.fetchingHistory && !baseActionBusy() && state.deliveryReady && state.outbox.length === 0 && state.inbox.length === 0 && !state.cycleBusy && !state.stampJob && !hasKeys(state.awaiting) && quietFor() >= REPAIR_TICK_MS;
   }
 
   // The reference in a disagreement is whoever has been in the room longest:
@@ -2350,7 +2901,7 @@
   }
 
   function repairTick() {
-    if (!state.connected || !Sync || !inAE) return;
+    if (!state.connected || state.baseHold || baseActionBusy() || !Sync || !inAE) return;
     var now = Date.now();
     var i;
     for (i = state.needs.length - 1; i >= 0; i--) {

@@ -1,0 +1,12 @@
+[
+  {
+    "name": "Use global foreground instead of the SDK host window",
+    "replace": [["/\\ ~Legacy\n  /\\ Owner(w) = h\n  /\\ bound' = [bound EXCEPT ![h] = w]", "/\\ ~Legacy\n  /\\ Owner(w) = h\n  /\\ bound' = [bound EXCEPT ![h] = foreground]"]],
+    "expect": "BoundToOwnWindow"
+  },
+  {
+    "name": "Publish a window without checking its process",
+    "replace": [["/\\ ~Legacy\n  /\\ Owner(w) = h", "/\\ ~Legacy\n  /\\ TRUE"]],
+    "expect": "BoundToOwnWindow"
+  }
+]

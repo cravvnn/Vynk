@@ -1,0 +1,23 @@
+[
+  {
+    "name": "treat a missing prefix as proof an ID is absent",
+    "replace": [["broken /\\ position = 1 /\\ RequirePrefix", "FALSE"]],
+    "expect": "NoAcceptedRetry"
+  },
+  {
+    "name": "merge a suffix with evicted intervening entries",
+    "replace": [["RequireSuffix /\\ committed > through + 1", "FALSE"]],
+    "expect": "NoAcceptedRetry"
+  },
+  {
+    "name": "forget an advertised ID committed after welcome",
+    "replace": [["TrackLive /\\ phase = \"ready\"", "FALSE"]],
+    "expect": "NoAcceptedRetry"
+  },
+  {
+    "name": "reject a proven recent receipt because unrelated old records expired",
+    "config": "Receipts-known.cfg",
+    "replace": [["DirectEvidence /\\ Wanted \\subseteq {committed}", "FALSE"]],
+    "expect": "KnownReceiptSurvivesMissingPrefix"
+  }
+]

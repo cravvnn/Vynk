@@ -47,6 +47,16 @@ timeline on purpose.
 
 See [INSTALL.md](INSTALL.md) for details and troubleshooting.
 
+To give late joiners the same project, use **save & share** once sync settles.
+Vynk saves the current project and uploads a private snapshot; edits made while
+it uploads stay in the room history. **get base** opens that snapshot after your
+confirmation and catches up with the room. Use the current panel and relay for
+this workflow; older shared bases need to be shared again.
+
+An ordinary reconnect keeps the current project and recovers missed edits even
+when someone shared a newer base while it was offline. Reloading the panel needs
+the shared base and complete history; save local work before replacing a project.
+
 ## Run the relay
 
 Domain + HTTPS:
@@ -73,7 +83,10 @@ limits, endpoints and updates.
 ```bash
 npm install
 npm run build      # TypeScript (protocol + server)
-npm test           # diff-engine + JSON-polyfill unit tests
+npm test           # sync-model, JSON-polyfill and panel recovery/HTTP tests
+npm run check:tla  # bounded state models and guard mutants (dev-only checker)
+npm run test:panel-runtime  # panel HTTP/file helpers; also run on Node 8.6 in CI
+npm run test:delivery  # private relay: dropped edits/echoes, restart, base checkpoints and disk failure
 npm start          # relay on :8787
 npm run smoke      # relay integration checks (relay must be running)
 npm run package    # build distributable zips + SHA-256 manifest into dist/

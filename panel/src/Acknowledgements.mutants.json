@@ -1,0 +1,7 @@
+[
+  {
+    "name": "every own echo decrements the target counter",
+    "replace": [["(~MatchQueuedId \\/ o \\in queued)", "TRUE"]],
+    "expect": "PendingMatchesQueue"
+  }
+]

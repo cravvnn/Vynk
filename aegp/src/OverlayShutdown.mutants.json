@@ -1,0 +1,7 @@
+[
+  {
+    "name": "Query the AE caption synchronously from the worker thread",
+    "replace": [["worker' = IF Legacy THEN \"wait-main\" ELSE \"idle\"", "worker' = \"wait-main\""]],
+    "expect": "deadlock"
+  }
+]

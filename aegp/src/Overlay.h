@@ -10,4 +10,5 @@ class Bridge;
 //   panel -> AEGP: PEERS <id\tname\tcolor\tx\ty\thasCursor ; ...>
 //   AEGP -> panel: CURSOR <x\ty>, FOCUS <0|1>, HELLO/PONG
 void Overlay_start(Bridge* bridge);
+void Overlay_setHostWindow(void* window);
 void Overlay_stop();

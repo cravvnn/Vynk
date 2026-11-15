@@ -1,6 +1,7 @@
 // Edit scenarios for the two-instance harness. `jsx` is an ES3 function body
 // run inside After Effects with `comp` (the Main comp), `L(name)` (layer by
 // name) and `vynkPair` in scope. `who` is the instance that makes the edit.
+import { recoveryScenarios } from './recovery-scenarios.mjs';
 const PRESETS = 'C:/Program Files/Adobe/Adobe After Effects 2025/Support Files/Presets/';
 
 const ids = async (h, who, layer) => JSON.parse(await h.jsx(who, "(function(){var c=vynkPair.comp('Main');var l=vynkPair.layer(c,'" + layer + "');return JSON.stringify([c.id,l?l.id:-1]);})()"));
@@ -78,9 +79,9 @@ export const scenarios = [
   { name: 'blending mode', who: 'A', jsx: `L('Yellow').blendingMode = BlendingMode.ADD;` },
   { name: '3D layer + z position', who: 'A', jsx: `var l = L('Yellow'); l.threeDLayer = true; l.property('ADBE Transform Group').property('ADBE Position').setValue([960, 540, -300]);` },
   { name: 'label colour', who: 'A', jsx: `L('Yellow').label = 9;` },
-  { name: 'peer locks a layer locally', who: 'B', jsx: `L('Cyan').locked = true;` },
+  { name: 'peer locks a layer locally', who: 'B', allowUnchanged: true, jsx: `L('Cyan').locked = true;` },
   { name: 'edit a layer the peer has locked', who: 'A', jsx: `L('Cyan').property('ADBE Transform Group').property('ADBE Opacity').setValue(64);` },
-  { name: 'peer unlocks', who: 'B', jsx: `L('Cyan').locked = false;` },
+  { name: 'peer unlocks', who: 'B', allowUnchanged: true, jsx: `L('Cyan').locked = false;` },
   { name: 'time stretch', who: 'A', jsx: `L('Yellow').stretch = 50;` },
   { name: 'track matte', who: 'A', jsx: `L('Emerald').enabled = true; L('Emerald').trackMatteType = TrackMatteType.ALPHA;` },
   { name: 'layer marker', who: 'A', jsx: `L('Yellow').property('ADBE Marker').setValueAtTime(1, new MarkerValue('beat'));` },
@@ -140,6 +141,7 @@ export const scenarios = [
   {
     name: 'layer style in a comp the peer does not have open', who: 'A', timeout: 90000,
     run: async (h) => {
+      h.focus('A');
       const out = await h.jsx('A', "(function(){try{var o=vynkPair.comp('Other');o.openInViewer();try{app.activeViewer.setActive();}catch(ev){}var l=vynkPair.layer(o,'Inner');for(var i=1;i<=o.numLayers;i++)o.layer(i).selected=(o.layer(i)===l);app.executeCommand(9006);return 'ok';}catch(e){return 'ERR '+e;}})()");
       await h.sleep(6000);
       await h.jsx('B', "(function(){vynkPair.comp('Other').openInViewer();return 'ok';})()");
@@ -148,7 +150,7 @@ export const scenarios = [
     }
   },
   {
-    name: 'both go back to Main', who: 'A',
+    name: 'both go back to Main', who: 'A', allowUnchanged: true,
     run: async (h) => {
       for (const w of ['A', 'B']) await h.jsx(w, "(function(){vynkPair.comp('Main').openInViewer();return 'ok';})()");
       return 'ok';
@@ -198,7 +200,8 @@ export const scenarios = [
     run: (h) => copyCurve(h, 'B', 'Contrast - luminance.ffx', 'Blue'),
     check: (h) => sameCurves(h, 'Blue')
   },
+  ...recoveryScenarios,
   { name: 'stress: 100 layers with keys and effects', who: 'A', timeout: 120000, jsx: `for (var i = 0; i < 100; i++) { var s = comp.layers.addSolid([0.2, 0.4, 0.6], 'S' + i, 1920, 1080, 1, 10); var p = s.property('ADBE Transform Group').property('ADBE Position'); for (var k = 0; k < 20; k++) p.setValueAtTime(k * 0.4, [k * 50, i * 10]); s.property('ADBE Effect Parade').addProperty('ADBE Gaussian Blur 2').property('ADBE Gaussian Blur 2-0001').setValue(i); }` },
-  { name: 'edit inside the 100-layer comp', who: 'A', jsx: `L('S50').property('ADBE Transform Group').property('ADBE Opacity').setValue(12);` },
-  { name: 'peer edits inside the 100-layer comp', who: 'B', jsx: `L('S20').property('ADBE Transform Group').property('ADBE Rotate Z').setValue(77);` },
+  { name: 'edit inside the 100-layer comp', who: 'A', timeout: 60000, jsx: `L('S50').property('ADBE Transform Group').property('ADBE Opacity').setValue(12);` },
+  { name: 'peer edits inside the 100-layer comp', who: 'B', timeout: 60000, jsx: `L('S20').property('ADBE Transform Group').property('ADBE Rotate Z').setValue(77);` },
 ];

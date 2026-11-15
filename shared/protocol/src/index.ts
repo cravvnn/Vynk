@@ -73,10 +73,11 @@ export interface BaseInfo {
   uploadedBy: string;
   uploadedAt: number;
   aeVersion?: string;
+  seq?: number;
 }
 
 export type C2S =
-  | { t: 'hello'; proto: number; room: string; name: string; aeVersion: AeVersion; build?: string; project?: string; token?: string }
+  | { t: 'hello'; proto: number; room: string; name: string; aeVersion: AeVersion; build?: string; project?: string; token?: string; pending?: string[]; after?: number }
   | { t: 'cursor'; x: number; y: number; compId?: string; active?: boolean }
   | { t: 'selection'; compId?: string; layers: string[]; hash?: string }
   | { t: 'op'; op: EditOp }
@@ -98,10 +99,16 @@ export type S2C =
       // Op-log position of the current base, so a client can ask for exactly
       // the ops that are missing from an incomplete replay.
       baseSeq?: number;
+      // An existing in-memory project resumed from hello.after, bound by token.
+      after?: number;
       // Set when the relay could not supply every op after the base, so a late
       // joiner knows its replay is incomplete. Additive: older panels ignore it.
       truncated?: boolean;
       fromSeq?: number;
+      // IDs from hello.pending already committed to this room's log.
+      accepted?: string[];
+      // Base uploads accept the snapshot's captured relay sequence.
+      checkpoint?: boolean;
     }
   | { t: 'base'; base: BaseInfo | null }
   | { t: 'presence'; event: 'join' | 'leave'; member: MemberInfo }

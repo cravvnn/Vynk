@@ -1,0 +1,7 @@
+[
+  {
+    "name": "flush every queued frame immediately",
+    "replace": [["(~Paced \\/ budget < 2)", "TRUE"]],
+    "expect": "NoRateDisconnect"
+  }
+]

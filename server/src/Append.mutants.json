@@ -1,0 +1,17 @@
+[
+  {
+    "name": "echo before log append completes",
+    "replace": [["(~AppendBeforeEcho \\/ writing \\in Values(disk))", "TRUE"]],
+    "expect": "EchoOnlyWritten"
+  },
+  {
+    "name": "release the last peer room with outstanding writes",
+    "replace": [["(~DrainBeforeRelease \\/ (Len(queue) = 0 /\\ writing = None))", "TRUE"]],
+    "expect": "NoReleaseDuringWrite"
+  },
+  {
+    "name": "welcome before the prior write chain drains",
+    "replace": [["(~JoinBarrier \\/ joinThrough \\subseteq Values(published))", "TRUE"]],
+    "expect": "WelcomeCoversEarlierFrames"
+  }
+]

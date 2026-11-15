@@ -29,7 +29,7 @@ struct Peer {
 };
 
 HWND g_overlay = nullptr;
-HWND g_aeWindow = nullptr;
+std::atomic<HWND> g_aeWindow(nullptr);
 HFONT g_font = nullptr;
 std::mutex g_peerMutex;
 std::vector<Peer> g_peers;
@@ -41,8 +41,8 @@ std::atomic<bool> g_running(false);
 double g_lastX = -1.0;
 double g_lastY = -1.0;
 bool g_aeFocused = false;
-bool g_aeWindowFound = false;
-int g_tickCount = 0;
+
+bool aeHasFocus();
 
 std::vector<std::string> split(const std::string& s, char sep) {
   std::vector<std::string> parts;
@@ -133,7 +133,10 @@ void handleLine(const std::string& line) {
     return;
   }
   if (line.compare(0, 6, "HELLO\t") == 0) {
-    if (g_bridge) g_bridge->sendLine("HELLO\tvynk\t1");
+    if (g_bridge) {
+      g_bridge->sendLine("HELLO\tvynk\t1");
+      g_bridge->sendLine(aeHasFocus() ? "FOCUS\t1" : "FOCUS\t0");
+    }
     return;
   }
   if (line.compare(0, 4, "PING") == 0) {
@@ -155,57 +158,17 @@ void drainBridge() {
 }
 
 bool aeHasFocus() {
-  if (!g_aeWindow) return false;
   HWND fg = GetForegroundWindow();
   if (!fg) return false;
   DWORD fgPid = 0;
-  DWORD aePid = 0;
   GetWindowThreadProcessId(fg, &fgPid);
-  GetWindowThreadProcessId(g_aeWindow, &aePid);
-  return fgPid != 0 && fgPid == aePid;
+  return fgPid == GetCurrentProcessId();
 }
 
-struct WindowSearch {
-  HWND best;
-  long long bestScore;
-};
-
-BOOL CALLBACK enumWindowsProc(HWND hwnd, LPARAM lp) {
-  if (!IsWindowVisible(hwnd)) return TRUE;
-  if (GetWindow(hwnd, GW_OWNER) != nullptr) return TRUE;
-  wchar_t cls[256] = {0};
-  GetClassNameW(hwnd, cls, 255);
-  wchar_t title[512] = {0};
-  GetWindowTextW(hwnd, title, 511);
-  bool classHit = wcsstr(cls, L"AE_CApplication") != nullptr;
-  bool titleHit = wcsstr(title, L"Adobe After Effects") != nullptr;
-  if (!classHit && !titleHit) return TRUE;
-  RECT r{};
-  if (!GetWindowRect(hwnd, &r)) return TRUE;
-  long long area = (long long)(r.right - r.left) * (long long)(r.bottom - r.top);
-  if (area <= 0) return TRUE;
-  long long score = area + (classHit ? (1LL << 44) : 0);
-  WindowSearch* ws = (WindowSearch*)lp;
-  if (score > ws->bestScore) {
-    ws->bestScore = score;
-    ws->best = hwnd;
-  }
-  return TRUE;
-}
-
-HWND findAeWindow() {
-  HWND fg = GetForegroundWindow();
-  // Prefer the foreground window if it is AE.
-  if (fg) {
-    wchar_t cls[256] = {0};
-    GetClassNameW(fg, cls, 255);
-    wchar_t title[512] = {0};
-    GetWindowTextW(fg, title, 511);
-    if (wcsstr(cls, L"AE_CApplication") || wcsstr(title, L"Adobe After Effects")) return fg;
-  }
-  WindowSearch ws{nullptr, 0};
-  EnumWindows(enumWindowsProc, (LPARAM)&ws);
-  return ws.best;
+bool isOurWindow(HWND hwnd) {
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  return pid == GetCurrentProcessId();
 }
 
 std::wstring toWide(const std::string& s) {
@@ -308,21 +271,18 @@ LRESULT CALLBACK overlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     }
     case WM_TIMER: {
-      g_tickCount++;
       drainBridge();
 
-      if (!g_aeWindow || !IsWindow(g_aeWindow) || !IsWindowVisible(g_aeWindow)) {
-        g_aeWindow = findAeWindow();
-        if (!g_aeWindow) {
-          if (g_overlayVisible) {
-            ShowWindow(g_overlay, SW_HIDE);
-            g_overlayVisible = false;
-          }
-          return 0;
+      HWND aeWindow = g_aeWindow.load();
+      if (!aeWindow || !isOurWindow(aeWindow) || !IsWindowVisible(aeWindow)) {
+        if (g_overlayVisible) {
+          ShowWindow(g_overlay, SW_HIDE);
+          g_overlayVisible = false;
         }
+        return 0;
       }
       RECT want{};
-      if (!GetWindowRect(g_aeWindow, &want)) return 0;
+      if (!GetWindowRect(aeWindow, &want)) return 0;
       positionOverlayToRect(want);
 
       bool focused = aeHasFocus();
@@ -385,6 +345,11 @@ void overlayThreadMain() {
 }
 
 }  // namespace
+
+void Overlay_setHostWindow(void* window) {
+  HWND hwnd = static_cast<HWND>(window);
+  g_aeWindow.store(hwnd && isOurWindow(hwnd) ? hwnd : nullptr);
+}
 
 void Overlay_start(Bridge* bridge) {
   if (g_running.load()) return;

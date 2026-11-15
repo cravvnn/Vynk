@@ -1,0 +1,4 @@
+[
+  { "name": "release the room during an HTTP upload", "replace": [["(~ReserveUpload \\/ active = {})", "TRUE"]], "expect": "CompletedUploadVisible" },
+  { "name": "allow two base writers in one room", "replace": [["(~ExclusiveUpload \\/ active = {})", "TRUE"]], "expect": "OneBaseWriter" }
+]

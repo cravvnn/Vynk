@@ -1,0 +1,12 @@
+[
+  {
+    "name": "Leave an aborted response without a completion callback",
+    "replace": [["/\\ ~Legacy /\\ network = \"aborted\"", "/\\ Legacy /\\ network = \"aborted\""]],
+    "expect": "deadlock"
+  },
+  {
+    "name": "Deliver a second callback on a late request error",
+    "replace": [["IF Guard /\\ result # \"pending\"", "IF FALSE"]],
+    "expect": "CallbackOnce"
+  }
+]

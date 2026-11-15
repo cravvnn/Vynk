@@ -1,0 +1,22 @@
+[
+  {
+    "name": "Quit a process without ownership evidence",
+    "replace": [["(h \\in owned /\\ h \\in disposable)", "(h \\in disposable)"]],
+    "expect": "OnlyDisposableOwnedProjectsClose"
+  },
+  {
+    "name": "Close an unrelated project in an owned process",
+    "replace": [["(h \\in owned /\\ h \\in disposable)", "(h \\in owned)"]],
+    "expect": "OnlyDisposableOwnedProjectsClose"
+  },
+  {
+    "name": "Force-kill after the grace period",
+    "replace": [["forced' = IF Legacy THEN alive ELSE forced", "forced' = alive"]],
+    "expect": "NoForcedTermination"
+  },
+  {
+    "name": "Erase ownership records on timeout",
+    "replace": [["record' = IF Legacy THEN FALSE ELSE alive \\cap owned # {}", "record' = FALSE"]],
+    "expect": "LiveOwnedHostsRemainTracked"
+  }
+]

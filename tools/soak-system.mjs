@@ -21,6 +21,7 @@ const tmp = path.join(os.tmpdir(), 'opencode', 'soak-system');
 const stats = { opsSent: 0, opsRecv: 0, cursors: 0, errors: [], reconnects: 0, baseUp: 0, baseDn: 0, health: [] };
 
 const relay = spawn(process.execPath, ['server/dist/index.js'], {
+  windowsHide: true,
   env: { ...process.env, PORT: String(PORT), DATA_DIR: path.join(tmp, 'rooms'), BASE_DIR: path.join(tmp, 'bases') },
   stdio: 'ignore',
 });
@@ -48,9 +49,14 @@ function cryptoRandomHex(n) {
 
 function makeClient(index) {
   const ws = new WebSocket(WS);
+  const sessionId = cryptoRandomHex(8);
   let id = null;
   let token = null;
-  const send = (o) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); };
+  const send = (o) => {
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(o));
+    return true;
+  };
 
   ws.on('open', () => send({ t: 'hello', proto: 2, room, name: 'soak' + index, aeVersion: '25.4 soak' }));
   ws.on('message', (raw) => {
@@ -69,12 +75,12 @@ function makeClient(index) {
   let n = index * 13;
   const tCursor = setInterval(() => { n++; send({ t: 'cursor', x: (n % 100) / 100, y: (n % 70) / 70, compId: '1|C' }); }, 50);
   const tOp = setInterval(() => {
+    if (!id) return;
     n++;
     const kind = n % 9 === 0 ? 'addKey' : n % 5 === 0 ? 'setKey' : 'set';
-    const op = { opId: `soak${index}-${n}`, kind, target: { comp: '1|C', layer: 'id' + (1 + (n % 6)) }, path: 'transform.opacity', value: 10 + (n % 80) };
+    const op = { opId: `soak${index}-${sessionId}-${n}`, kind, target: { comp: '1|C', layer: 'id' + (1 + (n % 6)) }, path: 'transform.opacity', value: 10 + (n % 80) };
     if (kind !== 'set') { op.time = 1 + (n % 10) * 0.5; op.interp = { inType: 1, outType: 1 }; }
-    send({ t: 'op', op });
-    stats.opsSent++;
+    if (send({ t: 'op', op })) stats.opsSent++;
   }, 900 + index * 40);
   const tSel = setInterval(() => { send({ t: 'selection', compId: '1|C', layers: ['id' + (1 + (n % 6))], hash: 'h' + (n % 3) }); }, 1500);
 

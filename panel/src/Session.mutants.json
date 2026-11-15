@@ -1,0 +1,22 @@
+[
+  {
+    "name": "Carry an old room outbox into a new room",
+    "replace": [["IF ~Legacy /\\ room # r", "IF FALSE"]],
+    "expect": "NoCrossRoomTraffic"
+  },
+  {
+    "name": "Accept an old socket close",
+    "replace": [["/\\ closed' = closed \\cup {s}\n  /\\ IF Current(s)", "/\\ closed' = closed \\cup {s}\n  /\\ IF TRUE"]],
+    "expect": "CurrentWelcomeSurvivesOldClose"
+  },
+  {
+    "name": "Send a delayed old hello over the replacement socket",
+    "replace": [["IF Current(s) /\\ active \\in opened", "IF active \\in opened"]],
+    "expect": "NoCrossRoomTraffic"
+  },
+  {
+    "name": "Accept the old socket welcome",
+    "replace": [["/\\ welcomed' = welcomed \\cup {s}\n  /\\ IF Current(s)", "/\\ welcomed' = welcomed \\cup {s}\n  /\\ IF TRUE"]],
+    "expect": "NoCrossRoomTraffic"
+  }
+]

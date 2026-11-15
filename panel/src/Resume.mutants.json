@@ -1,0 +1,7 @@
+[
+  { "name": "resume the existing project from the newest base checkpoint", "replace": [["IF RequestAnchor /\\ requested THEN 0 ELSE base", "base"], ["continuing' = (RequestAnchor /\\ requested /\\ context = 0 /\\ token = 0)", "continuing' = FALSE"]], "expect": "MissedDeletePreserved" },
+  { "name": "reuse replay after the project or token changes", "replace": [["held' = (held \\/ (CheckScope /\\ requested /\\ (context # 0 \\/ token # 0)))", "held' = held"], ["(CheckScope /\\ (context # replayContext \\/ token # 0))", "FALSE"]], "expect": "NoWrongScopeApply" },
+  { "name": "discard a valid resume when a newer base is announced", "replace": [["~KeepAnchor", "TRUE"]], "expect": "KnownResumeKept" },
+  { "name": "treat an old socket context as a project replacement", "replace": [["held' = (held \\/ ~IgnoreOldSocket)", "held' = TRUE"]], "expect": "NoTransportHold" },
+  { "name": "forget a project replacement between sockets", "replace": [["PreserveProjectHold /\\ phase = \"waiting\"", "FALSE"]], "expect": "NoWrongScopeApply" }
+]

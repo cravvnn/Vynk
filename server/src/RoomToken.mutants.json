@@ -1,0 +1,5 @@
+[
+  { "name": "publish a token before its write succeeds", "replace": [["~AwaitWrite /\\ phase = \"write\"", "phase = \"write\""]], "expect": "NoUnstoredPublish" },
+  { "name": "expire a token while its room state remains fresh", "replace": [["IF KeepFresh /\\ fresh THEN stored", "IF FALSE THEN stored"]], "expect": "RetainedGeneration" },
+  { "name": "load a token while its expiry deletion is in flight", "replace": [["(~SweepBarrier \\/ ~purging)", "TRUE"]], "expect": "NoActiveTokenLoss" }
+]

@@ -98,17 +98,31 @@ Everyone joins with the same room code (4-8 letters/digits). Op logs persist in 
 ## Base project sharing
 
 The relay also hosts one **base project** per room so the team starts from identical bytes
-(edit identities line up). In the panel: the host clicks **share base** (uploads its saved
-`.aep`), everyone else clicks **get base** (downloads and opens it in AE).
+(edit identities line up). In the panel, the host clicks **save & share** to save
+and upload a snapshot. Everyone else clicks **get base** to download, confirm
+replacement of their current project, open it in AE, and replay subsequent edits.
 
 Endpoints (all require the room's token, issued in `welcome`):
 
 ```
-PUT /base?token=<t>&name=<file>&by=<name>&ae=<ver>   # upload the base .aep
+PUT /base?token=<t>&name=<file>&by=<name>&ae=<ver>&seq=<n> # upload a snapshot captured at n
 GET /base?token=<t>                                   # download it
 GET /base/meta?token=<t>                              # { base: BaseInfo | null }
 GET /ops?token=<t>&after=<seq>&before=<seq>&limit=<n> # paged op history (NDJSON)
 ```
+
+Current panels require `welcome.checkpoint` before sharing a base. They save a
+private project copy and send its captured sequence in `seq`; the relay returns
+that checkpoint as `BaseInfo.seq` and replays edits after it, including edits made
+during upload. Invalid or stale/future checkpoints and overlapping uploads in one
+room return 400/409. Legacy uploads without `seq` use the request-start sequence
+and omit `BaseInfo.seq`; current panels ask the host to share a fresh snapshot.
+
+An existing panel can send `hello.after` with its room `token` to resume an
+in-memory project from its original replay anchor. The relay confirms that anchor
+in `welcome.after`, independently of the newest `baseSeq`. A different token or
+an invalid/future anchor is refused. Panel reloads and explicit base opens start
+fresh; the in-memory resume context is never restored from local storage.
 
 Limits and knobs (env vars on the `relay` service):
 
@@ -123,8 +137,13 @@ Limits and knobs (env vars on the `relay` service):
 The bundled compose file sets `DATA_DIR=/data/rooms` and `BASE_DIR=/data/bases`, both inside
 the `relay-data` volume, so rebuilding or recreating the container keeps rooms and shared bases.
 
-Bases and tokens older than 7 days are swept at startup and every 6 h. Uploads are streamed to
-disk; downloads are streamed. Uploads are rate-limited to one per 1.5 s per room.
+Inactive room files older than 7 days are swept at startup and every 6 h. A token
+is retained while the room has fresh log/base data. Active/joining rooms are held
+out of the sweep, and new joins wait for their room's in-progress sweep. Token
+writes must succeed before a new room is published. Corrupt/incomplete or
+unreadable logs refuse new joins; restore the affected file before retrying.
+The relay never silently discards corrupt records. Downloads are streamed;
+uploads are size-capped and buffered before writing, with one per 1.5 s per room.
 
 ## Updating a running relay
 

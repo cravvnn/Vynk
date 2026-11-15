@@ -201,8 +201,7 @@ Install
   5. Enter your name and the room code, then click join.
      The relay is preconfigured; change the server field only to use another one.
 
-The panel log should start with:
-  panel v${version} starting ... text=on
+The panel log should identify Vynk v${version}, a panel mX.Y build, and your AE version.
 
 Troubleshooting
   - Panel missing from the Extensions menu: run diagnose.ps1 and send the output

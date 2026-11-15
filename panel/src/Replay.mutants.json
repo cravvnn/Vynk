@@ -1,0 +1,7 @@
+[
+  { "name": "release accepted protection before older history", "replace": [["ProtectSeen /\\ known /\\ cursor < 2", "FALSE"]], "expect": "RelayOrderWins" },
+  { "name": "protect accepted values from later edits too", "replace": [["cursor < 2", "cursor # 2"]], "expect": "RelayOrderWins" },
+  { "name": "apply live traffic before the missing history", "replace": [["deferred' = HoldLive", "deferred' = FALSE"], ["IF HoldLive \\/ pending THEN inbox", "IF pending THEN inbox"]], "expect": "RelayOrderWins" },
+  { "name": "apply the accepted own structural batch again", "replace": [["IF SkipOwn /\\ known THEN inbox", "IF FALSE THEN inbox"]], "expect": "OwnRemovalNotRepeated" },
+  { "name": "repair before the missing replay prefix arrives", "replace": [["~WaitReplay \\/ phase \\in {\"drain\", \"done\"}", "TRUE"]], "expect": "NoPrematureRepair" }
+]

@@ -1,0 +1,6 @@
+[
+  { "name": "save an edit newer than the observed revision", "replace": [["RevisionGuard /\\ revision # guardRevision", "FALSE"]], "expect": "SnapshotMatchesCheckpoint" },
+  { "name": "save a different project with the same revision", "replace": [["FileGuard /\\ file # \"original\"", "FALSE"]], "expect": "NoOtherProjectSave" },
+  { "name": "upload the stale last-saved file", "replace": [["IF SaveCurrent THEN project ELSE disk", "disk"]], "expect": "SnapshotMatchesCheckpoint" },
+  { "name": "read a live file changed during upload", "replace": [["IF PrivateCopy THEN copy ELSE disk", "disk"]], "expect": "SnapshotMatchesCheckpoint" }
+]

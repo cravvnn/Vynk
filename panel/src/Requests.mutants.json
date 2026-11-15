@@ -1,0 +1,12 @@
+[
+  {
+    "name": "Accept a response after its connection/project was replaced",
+    "replace": [["IF Legacy \\/ origin[j] = context", "IF TRUE"]],
+    "expect": "NoWrongContextData"
+  },
+  {
+    "name": "Clear a replacement's busy flag before validating the old callback",
+    "replace": [["IF Legacy \\/ EarlyReset \\/ origin[j] = context", "IF TRUE"]],
+    "expect": "NoReplacementRequestReset"
+  }
+]

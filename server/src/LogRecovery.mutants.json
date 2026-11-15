@@ -1,0 +1,4 @@
+[
+  { "name": "skip corrupt lines and append after a broken tail", "replace": [["RejectCorrupt /\\ tail \\in {\"partial\", \"no-newline\", \"bad-sequence\"}", "FALSE"]], "expect": "EchoHasRecoverableRecord" },
+  { "name": "treat a failed log read as an empty room", "replace": [["RejectReadFailure /\\ tail = \"unreadable\"", "FALSE"]], "expect": "NoSequenceReuseAfterReadFailure" }
+]

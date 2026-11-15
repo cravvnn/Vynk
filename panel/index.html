@@ -19,6 +19,7 @@
   button { background: #0e6cc4; border: none; color: #fff; padding: 5px 10px; border-radius: 3px; cursor: pointer; }
   button:hover { background: #1679d6; }
   button.ghost { background: #3a3a3f; }
+  button:disabled { opacity: 0.5; cursor: default; }
   .section { padding: 8px; }
   .sectionHead { display: flex; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #9a9a9a; padding-bottom: 4px; }
   .members { border: 1px solid #333; border-radius: 3px; min-height: 40px; max-height: 110px; overflow-y: auto; }
@@ -63,7 +64,7 @@
   <div class="section">
     <div class="sectionHead"><span>Base project</span><span id="baseText" class="muted">base: none shared</span></div>
     <div class="row">
-      <button id="shareBaseBtn" class="ghost" title="share your saved .aep as the room base">share base</button>
+      <button id="shareBaseBtn" class="ghost" title="save the current project and share a base snapshot">save &amp; share</button>
       <button id="getBaseBtn" class="ghost" title="download and open the room's base .aep">get base</button>
     </div>
   </div>

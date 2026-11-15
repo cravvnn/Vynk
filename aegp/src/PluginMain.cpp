@@ -108,6 +108,11 @@ A_Err DeathHook(AEGP_GlobalRefcon /*plugin_refconP*/, AEGP_DeathRefcon /*refconP
 A_Err IdleHook(AEGP_GlobalRefcon /*plugin_refconP*/, AEGP_IdleRefcon /*refconP*/,
                A_long* max_sleepPL) {
   if (max_sleepPL) *max_sleepPL = kIdleSleepMs;
+  AEGP_SuiteHandler suites(sP);
+  HWND mainWindow = nullptr;
+  if (suites.UtilitySuite6()->AEGP_GetMainHWND(&mainWindow) == A_Err_NONE) {
+    Overlay_setHostWindow(mainWindow);
+  }
   // Inbound bridge traffic (PEERS/PING/HELLO) is handled on the overlay thread
   // so cursor updates stay responsive; the idle hook only does comp reads.
   AeHost_onIdle(static_cast<long long>(GetTickCount64()));

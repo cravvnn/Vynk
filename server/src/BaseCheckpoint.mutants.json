@@ -1,0 +1,12 @@
+[
+  {
+    "name": "checkpoint at upload completion",
+    "replace": [["metadata' = IF CapturedCheckpoint THEN captured ELSE seq", "metadata' = seq"], ["base' = IF CapturedCheckpoint THEN captured ELSE seq", "base' = seq"]],
+    "expect": "NoSkippedTail"
+  },
+  {
+    "name": "recover checkpoint from a stale separate sidecar",
+    "replace": [["IF MetadataCheckpoint THEN metadata ELSE sidecar", "sidecar"]],
+    "expect": "NoSkippedTail"
+  }
+]
