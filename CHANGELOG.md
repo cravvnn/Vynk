@@ -24,9 +24,15 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
   asks the lowest-id peer for the layers that differ and gets whole layers back. An edit
   that cannot be applied because its layer or comp is missing triggers the same request
   immediately. A repair never deletes a layer, and requests are relayed but not logged.
+- **Late joiners catch up without a shared base.** The reference in a repair is whoever has
+  been in the room longest. Someone who joins mid-session on the original project file is
+  sent the room's comps and folders, and every comp they open is brought to the room's state
+  (new layers created, changed ones overwritten, layers deleted before they arrived removed).
+- **Follow-up pass.** After any edit the open comp is walked once in small slices, so an edit
+  to a layer that was deselected again before the panel looked is still found.
 - **Two-instance convergence harness** (`npm run test:pair`): runs two real After Effects
   versions against a private relay, makes scripted edits in one and compares a full
-  independent dump of both projects. 66 scenarios including a 100-layer stress comp.
+  independent dump of both projects. 67 scenarios including a 100-layer stress comp.
 - `tools/test-sync.mjs`: unit tests for the new diff/adopt model.
 
 ### Changed
@@ -43,6 +49,9 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
   the full property tree only for selected layers, layers touched by incoming edits, and a
   small rotating slice. The native companion's change signal triggers a one-off full read
   when nothing selected explains a change.
+- Looking at a 100-layer comp costs about 10 ms instead of 100: attributes a layer type does
+  not have are no longer probed (a throwing read costs as much as a hundred good ones), and
+  unchanged attributes are not re-sent to the panel.
 - Duplicated layers get their own identity (a duplicate used to share its original's id).
 - Solo, shy, lock and selection are deliberately local.
 

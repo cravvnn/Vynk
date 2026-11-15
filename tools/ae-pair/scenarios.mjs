@@ -66,6 +66,22 @@ export const scenarios = [
   // following change is invisible to it: the two projects drift apart silently.
   { name: 'repair: silent drift on one value', who: 'B', select: false, timeout: 60000, before: { who: 'B', js: "(function(){var c=state.shadows[state.lastActiveSid];if(!c)return 'no shadow';for(var i=0;i<c.layers.length;i++){if(c.layers[i].a.name==='Blue'){c.layers[i].p['ADBE Transform Group/ADBE Opacity']={v:5,m:1};return 'ok';}}return 'no layer';})()" }, jsx: `L('Blue').property('ADBE Transform Group').property('ADBE Opacity').setValue(5);` },
   { name: 'repair: peer silently lost a layer, then it is edited', who: 'A', timeout: 60000, before: { who: 'B', js: "(function(){var c=state.shadows[state.lastActiveSid];if(!c)return 'no shadow';for(var i=0;i<c.layers.length;i++){if(c.layers[i].a.name==='Emerald'){c.layers.splice(i,1);cs.evalScript(\"(function(){var c=vynkPair.comp('Main');vynkPair.layer(c,'Emerald').remove();})()\");return 'ok';}}return 'no layer';})()" }, jsx: `L('Emerald').property('ADBE Transform Group').property('ADBE Opacity').setValue(81);` },
+  // B leaves, A keeps working, B comes back as a brand-new session on its now
+  // stale project. Nothing is replayed: self-repair has to bring B up to date.
+  {
+    name: 'late joiner catches up with the room', who: 'A', timeout: 90000,
+    run: async (h) => {
+      await h.js('B', "wantConnected = false; disconnect(); 'ok'");
+      await h.sleep(1500);
+      const edit = "L('Blue').property('ADBE Transform Group').property('ADBE Scale').setValue([44, 44]); comp.layers.addSolid([0.3, 0.3, 0.9], 'WhileAway', 1920, 1080, 1, 10); L('Sun').remove(); app.project.items.addComp('MadeWhileAway', 800, 600, 1, 4, 25)";
+      const out = await h.jsx('A', h.wrap(edit));
+      await h.sleep(4000);
+      await h.js('B', "later(function () { location.reload(); }, 50); 'ok'");
+      await h.sleep(2500);
+      await h.waitFor(() => h.obs.has('B'), 30000, 'B to rejoin');
+      return out;
+    }
+  },
   { name: 'stress: 100 layers with keys and effects', who: 'A', timeout: 120000, jsx: `for (var i = 0; i < 100; i++) { var s = comp.layers.addSolid([0.2, 0.4, 0.6], 'S' + i, 1920, 1080, 1, 10); var p = s.property('ADBE Transform Group').property('ADBE Position'); for (var k = 0; k < 20; k++) p.setValueAtTime(k * 0.4, [k * 50, i * 10]); s.property('ADBE Effect Parade').addProperty('ADBE Gaussian Blur 2').property('ADBE Gaussian Blur 2-0001').setValue(i); }` },
   { name: 'edit inside the 100-layer comp', who: 'A', jsx: `L('S50').property('ADBE Transform Group').property('ADBE Opacity').setValue(12);` },
   { name: 'peer edits inside the 100-layer comp', who: 'B', jsx: `L('S20').property('ADBE Transform Group').property('ADBE Rotate Z').setValue(77);` },

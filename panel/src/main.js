@@ -122,6 +122,12 @@
     catchupLogged: false,
     shadows: {},
     needs: [],
+    resend: {},
+    trailOn: false,
+    trailAt: 0,
+    selfJoinedAt: 1,
+    agreed: {},
+    wantItems: false,
     awaiting: {},
     repairAsked: {},
     repairSent: {},
@@ -427,6 +433,8 @@
           // Sync starts from what the project holds at the moment of joining.
           state.shadows = {};
           state.shadowItems = null;
+          state.agreed = {};
+          state.wantItems = true;
         }
         state.everConnected = true;
         state.selfId = msg.selfId;
@@ -439,8 +447,11 @@
         retryCount = 0;
         state.members = {};
         state.order = [];
+        // The welcome lists everyone who was here first; we joined just after.
+        state.selfJoinedAt = 1;
         for (var i = 0; i < msg.members.length; i++) {
           var m = msg.members[i];
+          if (m.joinedAt >= state.selfJoinedAt) state.selfJoinedAt = m.joinedAt + 1;
           state.members[m.id] = m;
           state.order.push(m.id);
           checkMemberBuild(m);
@@ -1166,6 +1177,8 @@
     state.compSid = null;
     state.shadows = {};
     state.shadowItems = null;
+    state.resend = { '*': 1 };
+    state.agreed = {};
     state.deepQueue = {};
     state.fullNext = {};
     state.sweepLayer = 0;
@@ -1428,7 +1441,7 @@
       if (ops[i].target.layer) e.deep[ops[i].target.layer] = 1;
     }
     // Anything queued must be read even if the project has not changed since.
-    var must = ops.length > 0 || state.readQueue.length > 0 || hasKeys(state.deepQueue) || hasKeys(state.fullNext) || state.sweeping;
+    var must = ops.length > 0 || state.readQueue.length > 0 || hasKeys(state.deepQueue) || hasKeys(state.fullNext) || state.sweeping || state.trailOn;
     for (i = 0; i < state.readQueue.length; i++) entry(state.readQueue[i], true);
     state.readQueue = [];
     for (sid in state.deepQueue) {
@@ -1440,6 +1453,9 @@
     if (act) {
       var a = entry(act, true);
       for (i = 0; i < state.selection.length; i++) a.deep[state.selection[i]] = 1;
+      // After any edit, walk the open comp once in small slices: an edit to a
+      // layer that was deselected again before we looked is found this way.
+      if (state.trailOn) a.sweep = [state.trailAt, SWEEP_LAYERS];
     }
     var comps = state.compSids;
     state.sweepComp = null;
@@ -1464,10 +1480,12 @@
         r.all = 1;
       }
       delete r.firm;
+      if (state.resend[r.c] || state.resend['*']) r.resend = 1;
       if (r.c === act) active = r;
       else read.push(r);
     }
     state.fullNext = {};
+    state.resend = {};
     return { active: active, read: read, must: must };
   }
 
@@ -1533,12 +1551,17 @@
             changed = handleCycle(out, ops.slice(0, done), forced);
           }
         } catch (e2) {
+          state.resend['*'] = 1;
           logThrottled('cyclethrow', 'sync loop error: ' + (e2 && e2.message ? e2.message : String(e2)), 5000);
         }
         if (state.harness && !out.same) {
           log('cycle ' + took + 'ms rev ' + state.rev + '>' + out.revBefore + '>' + out.rev + ' applied=' + done + ' snaps=' + (out.snaps ? out.snaps.length : 0) +
             ' all=' + (plan.active.all ? 1 : 0) + ' read=' + plan.read.length + ' changed=' + changed + ' stamp=' + (state.stampJob ? 1 : 0) +
             ' dq=' + (hasKeys(state.deepQueue) ? 1 : 0) + ' chase=' + state.chase + ' sweep=' + state.sweeping + ':' + state.sweepIdx + ':' + state.sweepLayer + ' act=' + state.lastActiveSid);
+        }
+        if (edited && !out.same && state.lastActiveSid) {
+          state.trailOn = true;
+          state.trailAt = 0;
         }
         if (typeof out.rev === 'number' && !state.resetPending) state.rev = out.rev;
         state.resetPending = false;
@@ -1562,7 +1585,7 @@
         }
         var delay;
         if (state.inbox.length > 0 || state.stampJob || state.readQueue.length > 0 || hasKeys(state.deepQueue) || hasKeys(state.fullNext) || hasKeys(state.force)) delay = 0;
-        else if (state.sweeping) delay = CYCLE_ACTIVE_MS;
+        else if (state.sweeping || state.trailOn) delay = CYCLE_ACTIVE_MS;
         else if (Date.now() - state.lastChangeAt < POLL_BURST_MS) delay = CYCLE_ACTIVE_MS;
         else delay = state.nativeMode ? NATIVE_IDLE_POLL_MS : CYCLE_IDLE_MS;
         // Never spend more than about a third of AE's time reading.
@@ -1602,6 +1625,16 @@
       announceSelection();
     }
     if (activeId) state.lastActiveSid = activeSid;
+  }
+
+  // A snapshot that is not kept: have its attributes sent again, and restart
+  // the follow-up walk so nothing it read in depth is skipped.
+  function dropSnapshot(compSid) {
+    state.resend[compSid] = 1;
+    if (compSid === state.lastActiveSid) {
+      state.trailOn = true;
+      state.trailAt = 0;
+    }
   }
 
   function hasKeys(obj) {
@@ -1696,6 +1729,10 @@
       var snap = snaps[si];
       var compSid = Sync.sidPart(snap.id);
       seenSnap[compSid] = 1;
+      if (state.trailOn && compSid === state.lastActiveSid && compSid !== state.sweepComp) {
+        state.trailAt += SWEEP_LAYERS;
+        if (state.trailAt >= snap.layers.length) state.trailOn = false;
+      }
       if (compSid === state.sweepComp) {
         state.sweepLayer += SWEEP_LAYERS;
         if (state.sweepLayer >= snap.layers.length) {
@@ -1720,14 +1757,18 @@
       var unknown = false;
       for (i = 0; i < snap.layers.length; i++) {
         var lite = snap.layers[i];
-        if (!lite.lite) continue;
         var held = known[lite.sid];
         if (!held) {
-          unknown = true;
+          // New here. Ask for every new layer in depth together, including the
+          // ones that already came back in depth this time, so the next
+          // snapshot has them all at once.
           state.deepQueue[compSid] = state.deepQueue[compSid] || {};
           state.deepQueue[compSid][lite.sid] = 1;
+          if (lite.lite) unknown = true;
           continue;
         }
+        if (!lite.lite) continue;
+        if (!lite.a) lite.a = held.a;
         lite.p = held.p;
         lite.g = held.g;
         lite.kind = held.kind;
@@ -1735,7 +1776,10 @@
         if (held.box) lite.box = held.box;
         delete lite.lite;
       }
+      if (!unknown) delete state.deepQueue[compSid];
       if (applied.length) Sync.adopt(shadow, snap, applied);
+      // A snapshot that is not kept must have its attributes sent again.
+      if (unknown || stamp.items.length > 0) dropSnapshot(compSid);
       if (unknown) continue;
       // Items being stamped this cycle are not announced yet, so hold back
       // anything that could refer to them.
@@ -1746,6 +1790,7 @@
         // from the next snapshot, which already shows them stamped.
         for (i = 0; i < fresh.length; i++) stamp.layers.push([snap.id, fresh[i], randomHex(12)]);
         state.readQueue.push(compSid);
+        dropSnapshot(compSid);
         continue;
       }
       var d = Sync.diff(shadow, snap, { forced: forced });
@@ -1805,8 +1850,22 @@
     return state.inbox.length === 0 && !state.cycleBusy && !state.stampJob && !hasKeys(state.awaiting) && quietFor() >= REPAIR_TICK_MS;
   }
 
+  // The reference in a disagreement is whoever has been in the room longest:
+  // a late joiner is brought to the room's state, never the other way round.
+  function joinedOf(id) {
+    if (id === state.selfId) return state.selfJoinedAt;
+    return (state.members[id] && state.members[id].joinedAt) || 0;
+  }
+
+  function olderThan(a, b) {
+    var ja = joinedOf(a);
+    var jb = joinedOf(b);
+    if (ja !== jb) return ja < jb;
+    return a < b;
+  }
+
   function sendNeed(compId, to, layers, full) {
-    send({ t: 'op', op: { opId: randomHex(12), kind: 'need', target: { comp: compId }, value: { to: to, layers: layers, full: full ? 1 : 0 } } });
+    send({ t: 'op', op: { opId: randomHex(12), kind: 'need', target: { comp: compId }, value: { to: to, layers: layers, full: full ? 1 : 0, fresh: full && !state.agreed[Sync.sidPart(compId)] ? 1 : 0 } } });
   }
 
   // A teammate's edit failed here because something it refers to is missing.
@@ -1837,6 +1896,12 @@
   function answerNeed(need) {
     var op = need.op;
     if (!caughtUp()) return false;
+    if (op.value.items) {
+      // A joiner asks what comps and folders the room has.
+      var itemOps = state.shadowItems ? Sync.diffItems([], state.shadowItems) : [];
+      if (itemOps.length > 0) sendOps(itemOps);
+      return true;
+    }
     var compSid = Sync.sidPart(op.target.comp);
     var shadow = state.shadows[compSid];
     if (!shadow) {
@@ -1863,11 +1928,11 @@
       if (theirs && !op.value.full && !(layer.sid in theirs)) continue;
       if (theirs && theirs[layer.sid] === mine.layers[layer.sid]) continue;
       var key = need.author + '|' + compSid + '|' + layer.sid;
-      var sent = state.repairSent[key] || [];
-      while (sent.length > 0 && now - sent[0] > REPAIR_WINDOW_MS) sent.shift();
-      if (sent.length >= REPAIR_MAX_PER_LAYER) continue;
-      sent.push(now);
-      state.repairSent[key] = sent;
+      // Sending the same layer again for the same pair of states cannot help
+      // (the difference is one this machine or theirs cannot represent).
+      var pairOf = (theirs && theirs[layer.sid] ? theirs[layer.sid] : String(Math.floor(now / 30000))) + '/' + mine.layers[layer.sid];
+      if (state.repairSent[key] === pairOf) continue;
+      state.repairSent[key] = pairOf;
       ops.push({ opId: randomHex(12), kind: 'add', target: { comp: shadow.id, layer: layer.sid }, value: { after: i > 0 ? shadow.layers[i - 1].sid : '', layer: layer } });
     }
     // A layer they have and we do not is never deleted by a repair (it may be
@@ -1875,6 +1940,12 @@
     var missing = null;
     for (var sid in theirs) {
       if (have[sid] || theirs[sid] === '') continue;
+      if (op.value.fresh) {
+        // They have never matched this comp since joining, so a layer the
+        // room does not have is one that was deleted before they arrived.
+        ops.push({ opId: randomHex(12), kind: 'remove', target: { comp: shadow.id, layer: sid } });
+        continue;
+      }
       var askKey = compSid + '|' + sid;
       var asked = state.repairAsked[askKey] || [];
       while (asked.length > 0 && now - asked[0] > REPAIR_WINDOW_MS) asked.shift();
@@ -1904,6 +1975,16 @@
     for (i = state.needs.length - 1; i >= 0; i--) {
       if (now - state.needs[i].at > REPAIR_NEED_TTL_MS || answerNeed(state.needs[i])) state.needs.splice(i, 1);
     }
+    if (state.wantItems && caughtUp() && state.shadowItems) {
+      var eldest = state.selfId;
+      for (var mid in state.members) {
+        if (state.members[mid].aeVersion !== 'observer' && olderThan(mid, eldest)) eldest = mid;
+      }
+      state.wantItems = false;
+      if (eldest !== state.selfId) {
+        send({ t: 'op', op: { opId: randomHex(12), kind: 'need', target: { comp: '' }, value: { to: eldest, items: 1 } } });
+      }
+    }
     var shadow = state.compSid ? state.shadows[state.compSid] : null;
     if (!shadow || !caughtUp()) return;
     var mine = Sync.digest(shadow);
@@ -1919,11 +2000,12 @@
       var m = state.members[id];
       if (id === state.selfId || !m.compHash || Sync.sidPart(m.compId) !== state.compSid) continue;
       if (m.compHash !== mine.hash) differs = true;
-      if (id < reference) {
+      if (olderThan(id, reference)) {
         reference = id;
         referenceHash = m.compHash;
       }
     }
+    if (reference === state.selfId || referenceHash === mine.hash) state.agreed[state.compSid] = 1;
     if (!differs || reference === state.selfId || referenceHash === mine.hash) return;
     if (quietFor() < REPAIR_QUIET_MS) return;
     var pair = reference + ':' + referenceHash + ':' + mine.hash;

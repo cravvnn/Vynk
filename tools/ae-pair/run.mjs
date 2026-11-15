@@ -355,9 +355,14 @@ async function main() {
         const got = await js(sc.before.who, sc.before.js);
         if (got !== 'ok') note = 'before: ' + got;
       }
-      const runs = [jsx(sc.who, wrap(sc.jsx, sc.select))];
-      if (sc.also) runs.push(jsx(sc.also.who, wrap(sc.also.jsx, sc.select)));
-      const outs = await Promise.all(runs);
+      let outs;
+      if (sc.run) {
+        outs = [await sc.run({ js, jsx, wrap, sleep, waitFor, obs })];
+      } else {
+        const runs = [jsx(sc.who, wrap(sc.jsx, sc.select))];
+        if (sc.also) runs.push(jsx(sc.also.who, wrap(sc.also.jsx, sc.select)));
+        outs = await Promise.all(runs);
+      }
       if (outs.some((o) => o !== 'ok')) note = 'edit: ' + outs.join(' / ');
       if (sc.then) {
         await sleep(1500);

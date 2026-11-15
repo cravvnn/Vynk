@@ -23,6 +23,9 @@ Everyone in a room must update: 0.8 and 0.7 panels cannot share a session.
   applied on one machine, the two projects stayed different for the rest of the session.
   *After:* the panels compare notes in the background and the missing or different layers
   are sent across again.
+- **Join a session that is already running.** *Before:* a late joiner needed the host to
+  share a fresh base project first. *After:* open the original project, join, and each comp
+  you open is brought up to date automatically.
 - **A teammate's change is one undo step.** *Before:* a single drag could land as several
   separate changes. *After:* each gesture arrives whole.
 - **Sync keeps running when you switch apps.** *Before:* incoming edits waited until After

@@ -209,6 +209,7 @@ $.global.vynkSync = (function () {
       writeStamp(item, stampFor(sid));
       itemCache = null;
     }
+    try { if (v.name && item.name !== v.name) item.name = String(v.name); } catch (e0) {}
     try { setItemParent(item, String(v.parent || '')); } catch (e) {}
     try { if (v.label !== undefined) item.label = Number(v.label); } catch (e2) {}
     return '';
@@ -447,12 +448,23 @@ $.global.vynkSync = (function () {
     return info;
   }
 
+  // Reading an attribute a layer type does not have throws, and a throw costs
+  // about as much as a hundred successful reads - so never ask.
+  var AV_ONLY = {
+    threeDLayer: 1, adjustmentLayer: 1, guideLayer: 1, motionBlur: 1, collapseTransformation: 1, audioEnabled: 1,
+    effectsActive: 1, timeRemapEnabled: 1, preserveTransparency: 1, blendingMode: 1, quality: 1, samplingQuality: 1,
+    frameBlendingType: 1
+  };
+
   function layerAttrs(layer) {
     var a = {};
     var i;
     var v;
+    var isAV = layer instanceof AVLayer;
+    var isLight = !isAV && layer instanceof LightLayer;
     a.name = layer.name;
     for (i = 0; i < BOOL_ATTRS.length; i++) {
+      if (AV_ONLY[BOOL_ATTRS[i]] && !isAV) continue;
       try {
         v = layer[BOOL_ATTRS[i]];
         if (v !== undefined) a[BOOL_ATTRS[i]] = v ? 1 : 0;
@@ -465,6 +477,8 @@ $.global.vynkSync = (function () {
       } catch (e2) {}
     }
     for (i = 0; i < ENUM_ATTRS.length; i++) {
+      if (AV_ONLY[ENUM_ATTRS[i]] && !isAV) continue;
+      if (ENUM_ATTRS[i] === 'lightType' && !isLight) continue;
       try {
         v = layer[ENUM_ATTRS[i]];
         if (v !== undefined) a[ENUM_ATTRS[i]] = Number(v);
@@ -472,14 +486,28 @@ $.global.vynkSync = (function () {
     }
     try { a.parent = layer.parent ? sidOf(layer.parent) : ''; } catch (e4) { a.parent = ''; }
     try { a.comment = stripStamps(layer.comment); } catch (e5) {}
-    try {
-      if (layer.trackMatteLayer !== undefined) {
-        a.matte = layer.trackMatteLayer ? sidOf(layer.trackMatteLayer) + ':' + Number(layer.trackMatteType) : '';
-      } else if (layer.trackMatteType !== undefined) {
-        a.matte = String(Number(layer.trackMatteType));
-      }
-    } catch (e6) {}
+    if (isAV) {
+      try {
+        if (layer.trackMatteLayer !== undefined) {
+          a.matte = layer.trackMatteLayer ? sidOf(layer.trackMatteLayer) + ':' + Number(layer.trackMatteType) : '';
+        } else if (layer.trackMatteType !== undefined) {
+          a.matte = String(Number(layer.trackMatteType));
+        }
+      } catch (e6) {}
+    }
     return a;
+  }
+
+  // Attributes are read for every layer on every look, but only sent to the
+  // panel when they differ from what was last sent.
+  var liteCache = {};
+
+  function attrSig(a) {
+    var parts = [];
+    for (var k in a) {
+      if (a.hasOwnProperty(k)) parts.push(a[k]);
+    }
+    return parts.join('\u0001');
   }
 
   function readLayer(layer, sid, force) {
@@ -510,6 +538,7 @@ $.global.vynkSync = (function () {
     var force = opts.force || null;
     var deep = opts.deep || null;
     var all = opts.all ? true : false;
+    var cacheKey = sidOf(comp) + '|';
     var from = opts.sweep ? Number(opts.sweep[0]) : 0;
     var count = opts.sweep ? Number(opts.sweep[1]) : 0;
     var s = {};
@@ -551,9 +580,18 @@ $.global.vynkSync = (function () {
       seen[sid] = layer;
       var isSel = layer.selected;
       if (all || isSel || (deep && deep[sid]) || (count > 0 && i > from && i <= from + count)) {
-        layers.push(readLayer(layer, sid, force && (force[sid] || force['*'])));
+        var full = readLayer(layer, sid, force && (force[sid] || force['*']));
+        liteCache[cacheKey + sid] = attrSig(full.a);
+        layers.push(full);
       } else {
-        layers.push({ sid: sid, lite: 1, a: layerAttrs(layer) });
+        var la = layerAttrs(layer);
+        var sig = attrSig(la);
+        if (!opts.resend && liteCache[cacheKey + sid] === sig) {
+          layers.push({ sid: sid, lite: 1 });
+        } else {
+          liteCache[cacheKey + sid] = sig;
+          layers.push({ sid: sid, lite: 1, a: la });
+        }
       }
       if (isSel) sel.push(sid);
     }
