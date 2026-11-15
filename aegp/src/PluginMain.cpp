@@ -21,19 +21,38 @@ namespace {
 // it in this file; the CEP panel reads the file to find us. This avoids
 // fixed-port collisions and ghost listeners. Carries comp reads/changes AND
 // cursor/peer traffic.
-const char* kPortFileRel = "\\Vynk\\bridge.port";
+//
+// Two After Effects versions can run at once, so each also writes
+// bridge-<key>.port, keyed by its install folder ("...\Support Files"). The
+// panel derives the same key from its CEPHtmlEngine path in that folder.
+unsigned int g_portForCleanup = 0;
 
-std::string portFilePath() {
+std::string vynkDir() {
   const char* local = std::getenv("LOCALAPPDATA");
   if (!local) return std::string();
-  return std::string(local) + kPortFileRel;
+  return std::string(local) + "\\Vynk";
 }
 
-void writePortFile(unsigned short port) {
-  std::string file = portFilePath();
-  if (file.empty()) return;
-  std::string dir = file.substr(0, file.find_last_of('\\'));
-  CreateDirectoryA(dir.c_str(), nullptr);
+std::string installKey() {
+  char exe[MAX_PATH * 2] = {0};
+  DWORD n = GetModuleFileNameA(nullptr, exe, sizeof(exe));
+  if (n == 0 || n >= sizeof(exe)) return std::string();
+  std::string dir(exe, n);
+  dir = dir.substr(0, dir.find_last_of('\\'));
+  unsigned int h = 2166136261u;
+  for (char c : dir) {
+    unsigned char u = static_cast<unsigned char>(c);
+    if (u >= 'A' && u <= 'Z') u = static_cast<unsigned char>(u + 32);
+    if (u == '/') u = '\\';
+    h ^= u;
+    h *= 16777619u;
+  }
+  char buf[16];
+  sprintf_s(buf, "%08x", h);
+  return buf;
+}
+
+void writeOne(const std::string& file, unsigned short port) {
   FILE* f = nullptr;
   if (fopen_s(&f, file.c_str(), "w") == 0 && f) {
     fprintf(f, "%u\n", static_cast<unsigned>(port));
@@ -41,9 +60,31 @@ void writePortFile(unsigned short port) {
   }
 }
 
+void writePortFile(unsigned short port) {
+  std::string dir = vynkDir();
+  if (dir.empty()) return;
+  CreateDirectoryA(dir.c_str(), nullptr);
+  g_portForCleanup = port;
+  writeOne(dir + "\\bridge.port", port);
+  std::string key = installKey();
+  if (!key.empty()) writeOne(dir + "\\bridge-" + key + ".port", port);
+}
+
 void deletePortFile() {
-  std::string file = portFilePath();
-  if (!file.empty()) DeleteFileA(file.c_str());
+  std::string dir = vynkDir();
+  if (dir.empty()) return;
+  std::string key = installKey();
+  if (!key.empty()) DeleteFileA((dir + "\\bridge-" + key + ".port").c_str());
+  // The shared file may belong to another instance by now; only remove it if
+  // it still names our port.
+  std::string shared = dir + "\\bridge.port";
+  FILE* f = nullptr;
+  unsigned int port = 0;
+  if (fopen_s(&f, shared.c_str(), "r") == 0 && f) {
+    if (fscanf_s(f, "%u", &port) != 1) port = 0;
+    fclose(f);
+  }
+  if (port != 0 && port == g_portForCleanup) DeleteFileA(shared.c_str());
 }
 
 // Idle-hook sleep hint (ms). Keep this generous: AE may call the idle hook at

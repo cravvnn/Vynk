@@ -67,6 +67,11 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
 
 ### Fixed
 
+- **Two After Effects versions open at once.** The native companion now also writes
+  `bridge-<key>.port`, keyed by its install folder, and the panel reads the file for its own
+  install first. Previously both panels attached to whichever companion started last, so one
+  of them had no cursor overlay or change signal. The shared `bridge.port` is still written
+  and is only deleted by the instance it names.
 - **Stale panel copies.** A panel reload re-ran the script in the same window while the
   previous copy's timers kept firing, so several sync loops drove one project. Every timer
   now checks it belongs to the newest copy.

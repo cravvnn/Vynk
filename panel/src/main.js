@@ -1022,12 +1022,39 @@
 
   // The AEGP binds an ephemeral port and writes it here; re-read on every
   // attempt so we pick up a fresh port if AE restarted.
+  // Same key the native companion derives from its own AfterFX.exe: an FNV-1a
+  // hash of the lower-cased "...\Support Files" folder of this AE install.
+  function installKey() {
+    try {
+      var parts = String(process.execPath || '').split(/[\\\/]/);
+      if (parts.length < 3) return '';
+      var dir = parts.slice(0, parts.length - 2).join('\\').toLowerCase();
+      var h = 2166136261;
+      for (var i = 0; i < dir.length; i++) {
+        h ^= dir.charCodeAt(i) & 255;
+        h = Math.imul(h, 16777619) >>> 0;
+      }
+      var hex = h.toString(16);
+      while (hex.length < 8) hex = '0' + hex;
+      return hex;
+    } catch (e) {
+      return '';
+    }
+  }
+
   function aegpBridgePort() {
     try {
       var fs = require('fs');
-      var file = (process.env.LOCALAPPDATA || '') + '\\Vynk\\bridge.port';
-      var n = parseInt(fs.readFileSync(file, 'utf8').trim(), 10);
-      if (n > 0 && n < 65536) return n;
+      var dir = (process.env.LOCALAPPDATA || '') + '\\Vynk\\';
+      var files = ['bridge.port'];
+      var key = installKey();
+      if (key) files.unshift('bridge-' + key + '.port');
+      for (var i = 0; i < files.length; i++) {
+        try {
+          var n = parseInt(fs.readFileSync(dir + files[i], 'utf8').trim(), 10);
+          if (n > 0 && n < 65536) return n;
+        } catch (e1) {}
+      }
     } catch (e) {}
     return AEGP_PORT;
   }
