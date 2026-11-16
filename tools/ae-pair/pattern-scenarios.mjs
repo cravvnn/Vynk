@@ -1,14 +1,15 @@
 import os from 'node:os';
 import path from 'node:path';
-import { pngPixels } from './png.mjs';
+import { waitForPng } from './png.mjs';
 
 const pattern = "var c=vynkPair.comp('PatternStyles'),l=vynkPair.layer(c,'Pattern'),p=l.property('ADBE Layer Styles').property('patternFill/enabled');";
+let renderNumber = 0;
 
 async function render(h, who) {
-  const file = path.join(os.tmpdir(), 'vynk-pair', 'pattern-' + who + '.png');
+  const file = path.join(os.tmpdir(), 'vynk-pair', 'pattern-' + who + '-' + Date.now() + '-' + process.pid + '-' + (++renderNumber) + '.png');
   const got = await h.jsx(who, `(function(){var c=vynkPair.comp('PatternStyles');c.saveFrameToPng(1,new File(${JSON.stringify(file.replace(/\\/g, '/'))}));return 'ok';})()`);
   if (got !== 'ok') throw Error('pattern render: ' + got);
-  return pngPixels(file);
+  return waitForPng(file, h.waitFor);
 }
 
 export const patternScenarios = [

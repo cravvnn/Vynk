@@ -11,7 +11,7 @@
     "typecheck": "tsc -b shared/protocol server",
     "start": "node server/dist/index.js",
     "smoke": "node server/scripts/smoke.mjs",
-    "test": "node tools/test-sync.mjs && node tools/test-jsonpoly.mjs && node --test tools/test-panel.mjs tools/test-base-panel.mjs tools/test-observation.mjs tools/test-host-styles.mjs tools/test-custom-data.mjs tools/test-native-identity.mjs tools/test-ae-host-process.mjs tools/test-ae-run-script.mjs",
+    "test": "node tools/test-sync.mjs && node tools/test-jsonpoly.mjs && node --test tools/test-panel.mjs tools/test-base-panel.mjs tools/test-observation.mjs tools/test-host-styles.mjs tools/test-custom-data.mjs tools/test-native-identity.mjs tools/test-ae-host-process.mjs tools/test-ae-run-script.mjs tools/test-ae-render.mjs",
     "check:tla": "node tools/tla/run.mjs",
     "test:panel-runtime": "node tools/test-panel-runtime.cjs",
     "test:delivery": "node --test tools/test-delivery.mjs",

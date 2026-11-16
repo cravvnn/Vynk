@@ -2,6 +2,16 @@ import fs from 'node:fs';
 import { inflateSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 
+export async function waitForPng(file, waitFor) {
+  let pixels, error = 'file not produced';
+  const ready = await waitFor(() => {
+    try { pixels = pngPixels(file); return true; }
+    catch (err) { error = err.message; return false; }
+  }, 10000);
+  if (!ready) throw Error('rendered PNG not ready: ' + file + ': ' + error);
+  return pixels;
+}
+
 export function pngPixels(file) {
   const png = fs.readFileSync(file);
   if (!png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw Error('not a PNG');
