@@ -10,7 +10,7 @@ function host(initial, removeWorks = true) {
   let effects = 1;
   let registered = false;
   const commands = [];
-  const names = ['dropShadow/enabled', 'innerShadow/enabled', 'frameFX/enabled'];
+  const names = ['dropShadow/enabled', 'innerShadow/enabled', 'frameFX/enabled', 'patternFill/enabled'];
   const slots = names.map((matchName) => ({ matchName, get canSetEnabled() { return applied.includes(matchName); } }));
   const styles = { numProperties: slots.length, get canSetEnabled() { return applied.length > 0; }, property(i) { return typeof i === 'number' ? slots[i - 1] : slots.find((s) => s.matchName === i); } };
   function CompItem() {}
@@ -32,8 +32,9 @@ function host(initial, removeWorks = true) {
   const shared = {};
   vm.runInNewContext(engine, { app, CompItem, PropertyType: { PROPERTY: 1, INDEXED_GROUP: 2 }, PropertyValueType: {}, JSON, $: { global: shared } });
   return { commands, get effects() { return effects; }, get applied() { return applied; },
-    apply(want, focused = 1) {
-      const result = JSON.parse(shared.vynkSync.cycle(JSON.stringify({ ops: [{ kind: 'prop', target: { comp: 'id1|Main', layer: 'id2' }, path: 'ADBE Layer Styles@styles', value: { v: want } }], focused })));
+    apply(want, focused = 1, kind = 'prop', sid = 'id2') {
+      const op = { kind, target: { comp: 'id1|Main', layer: sid }, path: 'ADBE Layer Styles@styles', value: kind === 'add' ? { layer: { kind: 'solid', p: { 'ADBE Layer Styles@styles': { v: want } } } } : { v: want } };
+      const result = JSON.parse(shared.vynkSync.cycle(JSON.stringify({ ops: [op], focused })));
       assert.equal(result.r.length, 1);
       return result.r[0];
     }
@@ -61,4 +62,32 @@ test('styles wait for foreground and a repeated successful set is idempotent', (
   assert.equal(h.apply(['dropShadow/enabled']), '');
   assert.equal(h.apply(['dropShadow/enabled']), '');
   assert.deepEqual(h.commands, [3739, 9000]);
+});
+
+test('an existing Pattern Overlay is recognized without menu commands or foreground focus', () => {
+  const h = host(['patternFill/enabled']);
+  assert.equal(h.apply(['patternFill/enabled'], 0), '');
+  assert.deepEqual(h.commands, []);
+});
+
+test('a missing pattern requires artwork from the shared base before changing other styles', () => {
+  const h = host(['dropShadow/enabled']);
+  assert.match(h.apply(['patternFill/enabled'], 0), /artwork.*shared base/);
+  assert.deepEqual(h.applied, ['dropShadow/enabled']);
+  assert.deepEqual(h.commands, []);
+});
+
+test('rebuilding mixed styles never discards an existing pattern to remove another style', () => {
+  const h = host(['dropShadow/enabled', 'patternFill/enabled']);
+  assert.match(h.apply(['patternFill/enabled']), /losing Pattern Overlay artwork/);
+  assert.deepEqual(h.applied, ['dropShadow/enabled', 'patternFill/enabled']);
+  assert.deepEqual(h.commands, []);
+});
+
+test('a layer upsert cannot silently create a blank replacement for missing pattern artwork', () => {
+  const h = host(['dropShadow/enabled']);
+  assert.match(h.apply(['patternFill/enabled'], 0, 'add'), /artwork.*shared base/);
+  assert.match(h.apply(['patternFill/enabled'], 0, 'add', 'stnew'), /artwork.*shared base/);
+  assert.deepEqual(h.applied, ['dropShadow/enabled']);
+  assert.deepEqual(h.commands, []);
 });

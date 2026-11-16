@@ -20,10 +20,17 @@ optional base `.aep`; footage is resolved from your own storage.
   composition settings and markers.
 - **Cursors, selection and presence.**
 
-- **Layer styles** and **Curves** (and other effects that keep their own data; needs the
-  native plug-in).
+- **Layer styles** and **animated Curves/custom-data controls** (needs the current native
+  plug-in on every editor's machine). Custom animation includes values, key times,
+  interpolation and temporal ease.
 
-Not synced yet: the Pattern Overlay layer style, and keyframed Curves.
+**Pattern Overlay:** import the styled PSD before sharing the base. Its controls and
+their keyframes sync when the artwork is already in that shared project. Adding new
+pattern artwork later requires an updated shared base. A style rebuild that would
+discard existing pattern artwork is refused.
+
+Custom-data layouts must match between plug-ins. Animations are bounded to 600 keys
+and 512 KiB of encoded data per control; incompatible writes are refused.
 Solo, shy, lock and your selection stay local.
 
 Playheads are deliberately **not** synced - editors work at different points of the

@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(vynk_aegp LANGUAGES CXX RC)
 
+enable_testing()
+add_executable(vynk_arb_tests ../tools/test-arb-codec.cpp)
+target_include_directories(vynk_arb_tests PRIVATE src)
+target_compile_features(vynk_arb_tests PRIVATE cxx_std_17)
+add_test(NAME arb-codec COMMAND vynk_arb_tests)
+
 # Native After Effects AEGP companion. Requires the After Effects C++ SDK under
 # third_party/AfterEffectsSDK (see README.md). Point AE_SDK_PATH at the folder
 # that contains "Examples".

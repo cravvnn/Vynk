@@ -14,6 +14,12 @@
 #include <vector>
 #include <cstring>
 #include <string>
+#include <numeric>
+#include <algorithm>
+#include <sstream>
+#include <iomanip>
+#include <locale>
+#include "ArbData.h"
 
 namespace {
 
@@ -174,8 +180,9 @@ void pollActiveComp() {
 // are invisible to ExtendScript. The panel reads and writes them here, as hex.
 //
 //   panel -> ARBGET \t req \t compItemId \t layerId
-//   AEGP  -> ARB    \t req \t ok \t fx:param:size:hex;...     (fx 1-based, K = keyframed)
-//   panel -> ARBSET \t req \t compItemId \t layerId \t fx \t param \t hex
+//   AEGP  -> ARB    \t req \t ok \t fx:param:size:hex;... (fx 1-based)
+//   Animated records use layer time: fx:param:K:K|time/scale,in,out,flags,eases,hex|...
+//   panel -> ARBSET \t req \t compItemId \t layerId \t fx \t param \t data
 //   AEGP  -> ARBOK  \t req \t ok | err:<reason>
 
 std::mutex g_cmdMutex;
@@ -239,25 +246,6 @@ std::string toHex(const unsigned char* p, size_t n) {
   return out;
 }
 
-int hexVal(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
-}
-
-bool fromHex(const std::string& hex, std::vector<unsigned char>& out) {
-  if (hex.size() % 2) return false;
-  out.resize(hex.size() / 2);
-  for (size_t i = 0; i < out.size(); i++) {
-    int hi = hexVal(hex[i * 2]);
-    int lo = hexVal(hex[i * 2 + 1]);
-    if (hi < 0 || lo < 0) return false;
-    out[i] = static_cast<unsigned char>((hi << 4) | lo);
-  }
-  return true;
-}
-
 // Calls fn(streamH) for one effect parameter; disposes everything afterwards.
 template <typename Fn>
 std::string withParam(AEGP_LayerH layerH, A_long fx, A_long param, Fn fn) {
@@ -275,28 +263,119 @@ std::string withParam(AEGP_LayerH layerH, A_long fx, A_long param, Fn fn) {
   return result;
 }
 
+std::string arbBytes(const AEGP_StreamValue2& value) {
+  PF_Handle h = reinterpret_cast<PF_Handle>(value.val.arbH);
+  if (!h) return "";
+  size_t size = static_cast<size_t>(g_suites->HandleSuite1()->host_get_handle_size(h));
+  if (!size || size * 2 > ArbData::MaxText) return "";
+  void* p = g_suites->HandleSuite1()->host_lock_handle(h);
+  if (!p) return "";
+  std::string out = toHex(static_cast<unsigned char*>(p), size);
+  g_suites->HandleSuite1()->host_unlock_handle(h);
+  return out;
+}
+
+std::string realText(double value) {
+  std::ostringstream text;
+  text.imbue(std::locale::classic());
+  text << std::setprecision(9) << (value == 0 ? 0.0 : value);
+  return text.str();
+}
+
 std::string readArb(AEGP_StreamRefH streamH) {
+  auto* keys = g_suites->KeyframeSuite4();
   A_long kfs = 0;
-  g_suites->KeyframeSuite5()->AEGP_GetStreamNumKFs(streamH, &kfs);
-  if (kfs > 0) return "K";
+  if (keys->AEGP_GetStreamNumKFs(streamH, &kfs) || kfs < 0 || kfs > ArbData::MaxKeys) return "E";
+  if (kfs > 0) {
+    struct TimedKey { A_Time time; std::string text; };
+    std::vector<TimedKey> records;
+    size_t length = 1;
+    A_short dims = 0;
+    if (keys->AEGP_GetStreamTemporalDimensionality(streamH, &dims) || dims < 0 || dims > 4) return "E";
+    for (A_long i = 0; i < kfs; i++) {
+      A_Time time{};
+      AEGP_KeyframeInterpolationType in = 0, out = 0;
+      AEGP_KeyframeFlags flags = 0;
+      if (keys->AEGP_GetKeyframeTime(streamH, i, AEGP_LTimeMode_LayerTime, &time) || !time.scale ||
+          keys->AEGP_GetKeyframeInterpolation(streamH, i, &in, &out) ||
+          keys->AEGP_GetKeyframeFlags(streamH, i, &flags)) return "E";
+      long long divisor = std::gcd(static_cast<long long>(time.value), static_cast<long long>(time.scale));
+      std::string record = "|" + std::to_string(time.value / divisor) + "/" + std::to_string(time.scale / divisor) +
+              "," + std::to_string(in) + "," + std::to_string(out) + "," + std::to_string(flags & 3) + ",";
+      if (in == AEGP_KeyInterp_BEZIER || out == AEGP_KeyInterp_BEZIER) {
+        for (A_short d = 0; d < dims; d++) {
+          AEGP_KeyframeEase inEase{}, outEase{};
+          if (keys->AEGP_GetKeyframeTemporalEase(streamH, i, d, &inEase, &outEase)) return "E";
+          if (d) record += "/";
+          record += realText(inEase.speedF) + "~" + realText(inEase.influenceF) + "~" +
+                  realText(outEase.speedF) + "~" + realText(outEase.influenceF);
+        }
+      }
+      AEGP_StreamValue2 value{};
+      if (keys->AEGP_GetNewKeyframeValue(g_pluginId, streamH, i, &value)) return "E";
+      std::string hex = arbBytes(value);
+      g_suites->StreamSuite6()->AEGP_DisposeStreamValue(&value);
+      if (hex.empty()) return "E";
+      record += "," + hex;
+      length += record.size();
+      if (length > ArbData::MaxText) return "E";
+      records.push_back({time, std::move(record)});
+    }
+    std::sort(records.begin(), records.end(), [](const TimedKey& a, const TimedKey& b) {
+      return static_cast<long long>(a.time.value) * b.time.scale < static_cast<long long>(b.time.value) * a.time.scale;
+    });
+    std::string body = "K";
+    for (const auto& record : records) body += record.text;
+    return "K:" + body;
+  }
   AEGP_StreamValue2 value;
   AEFX_CLR_STRUCT(value);
   A_Time t = {0, 1};
   if (g_suites->StreamSuite6()->AEGP_GetNewStreamValue(g_pluginId, streamH, AEGP_LTimeMode_CompTime, &t, TRUE, &value)) return "E";
-  std::string out = "E";
+  std::string hex = arbBytes(value);
+  g_suites->StreamSuite6()->AEGP_DisposeStreamValue(&value);
+  return hex.empty() ? "E" : std::to_string(hex.size() / 2) + ":" + hex;
+}
+
+std::string putArb(AEGP_StreamRefH streamH, AEGP_StreamValue2& value, const ArbData::Value& data) {
+  auto* keys = g_suites->KeyframeSuite4();
+  A_long count = 0;
+  if (keys->AEGP_GetStreamNumKFs(streamH, &count)) return "err:keys";
+  for (A_long i = count - 1; i >= 0; i--) {
+    if (keys->AEGP_DeleteKeyframe(streamH, i)) return "err:delete key";
+  }
   PF_Handle h = reinterpret_cast<PF_Handle>(value.val.arbH);
-  if (h) {
-    size_t size = static_cast<size_t>(g_suites->HandleSuite1()->host_get_handle_size(h));
+  for (const auto& key : data.keys) {
     void* p = g_suites->HandleSuite1()->host_lock_handle(h);
-    if (p) {
-      char head[32];
-      sprintf_s(head, "%zu:", size);
-      out = std::string(head) + toHex(static_cast<unsigned char*>(p), size);
-      g_suites->HandleSuite1()->host_unlock_handle(h);
+    if (!p) return "err:lock";
+    memcpy(p, key.bytes.data(), key.bytes.size());
+    g_suites->HandleSuite1()->host_unlock_handle(h);
+    if (!data.animated) {
+      if (g_suites->StreamSuite6()->AEGP_SetStreamValue(g_pluginId, streamH, &value)) return "err:set";
+      continue;
+    }
+    A_Time time = {key.time, key.scale};
+    AEGP_KeyframeIndex index = 0;
+    if (keys->AEGP_InsertKeyframe(streamH, AEGP_LTimeMode_LayerTime, &time, &index) ||
+        keys->AEGP_SetKeyframeValue(streamH, index, &value) ||
+        keys->AEGP_SetKeyframeInterpolation(streamH, index, key.in, key.out)) return "err:set key";
+    for (size_t d = 0; d < key.ease.size(); d++) {
+      const auto& ease = key.ease[d];
+      AEGP_KeyframeEase inEase{ease.inSpeed, ease.inInfluence}, outEase{ease.outSpeed, ease.outInfluence};
+      if (keys->AEGP_SetKeyframeTemporalEase(streamH, index, static_cast<A_long>(d), &inEase, &outEase)) return "err:set ease";
+    }
+    for (long flag : {AEGP_KeyframeFlag_TEMPORAL_CONTINUOUS, AEGP_KeyframeFlag_TEMPORAL_AUTOBEZIER}) {
+      if (keys->AEGP_SetKeyframeFlag(streamH, index, flag, (key.flags & flag) ? TRUE : FALSE)) return "err:set flag";
     }
   }
-  g_suites->StreamSuite6()->AEGP_DisposeStreamValue(&value);
-  return out;
+  return "ok";
+}
+
+bool arbMatches(AEGP_StreamRefH streamH, const ArbData::Value& wanted) {
+  std::string actual = readArb(streamH);
+  size_t colon = actual.find(':');
+  ArbData::Value decoded;
+  return colon != std::string::npos && ArbData::parse(actual.substr(colon + 1), decoded) && ArbData::same(wanted, decoded);
 }
 
 void cmdArbGet(const std::vector<std::string>& f) {
@@ -343,8 +422,8 @@ void cmdArbSet(const std::vector<std::string>& f) {
     emit("ARBOK\t" + req + "\terr:args");
     return;
   }
-  std::vector<unsigned char> bytes;
-  if (!fromHex(f[6], bytes) || bytes.empty()) {
+  ArbData::Value data;
+  if (!ArbData::parse(f[6], data)) {
     emit("ARBOK\t" + req + "\terr:bad data");
     return;
   }
@@ -358,9 +437,20 @@ void cmdArbSet(const std::vector<std::string>& f) {
     AEGP_StreamType type = AEGP_StreamType_NO_DATA;
     g_suites->StreamSuite6()->AEGP_GetStreamType(streamH, &type);
     if (type != AEGP_StreamType_ARB) return std::string("err:not custom data");
-    A_long kfs = 0;
-    g_suites->KeyframeSuite5()->AEGP_GetStreamNumKFs(streamH, &kfs);
-    if (kfs > 0) return std::string("err:keyframed");
+    A_Boolean canVary = FALSE;
+    AEGP_KeyInterpolationMask mask = 0;
+    A_short dims = 0;
+    if (data.animated && (g_suites->StreamSuite6()->AEGP_CanVaryOverTime(streamH, &canVary) || !canVary ||
+        g_suites->StreamSuite6()->AEGP_GetValidInterpolations(streamH, &mask) ||
+        g_suites->KeyframeSuite4()->AEGP_GetStreamTemporalDimensionality(streamH, &dims))) return std::string("err:cannot animate");
+    for (const auto& key : data.keys) {
+      if (data.animated && (!(mask & (1 << (key.in - 1))) || !(mask & (1 << (key.out - 1))) ||
+          (!key.ease.empty() && key.ease.size() != dims))) return std::string("err:interpolation");
+    }
+    std::string before = readArb(streamH);
+    size_t colon = before.find(':');
+    ArbData::Value original;
+    if (colon == std::string::npos || !ArbData::parse(before.substr(colon + 1), original)) return std::string("err:read keys");
     AEGP_StreamValue2 value;
     AEFX_CLR_STRUCT(value);
     A_Time t = {0, 1};
@@ -369,19 +459,21 @@ void cmdArbSet(const std::vector<std::string>& f) {
     std::string r = "ok";
     if (!h) {
       r = "err:no data";
-    } else if (g_suites->HandleSuite1()->host_get_handle_size(h) != bytes.size()) {
-      // Different sizes mean a different layout (e.g. another plug-in
-      // version): never write bytes the effect might misread.
-      r = "err:size";
     } else {
-      void* p = g_suites->HandleSuite1()->host_lock_handle(h);
-      if (!p) {
-        r = "err:lock";
-      } else {
-        memcpy(p, bytes.data(), bytes.size());
-        g_suites->HandleSuite1()->host_unlock_handle(h);
-        g_suites->UtilitySuite6()->AEGP_StartUndoGroup("Vynk: teammate edit");
-        if (g_suites->StreamSuite6()->AEGP_SetStreamValue(g_pluginId, streamH, &value)) r = "err:set";
+      size_t size = g_suites->HandleSuite1()->host_get_handle_size(h);
+      for (const auto& key : data.keys) {
+        if (key.bytes.size() != size) r = "err:size";
+      }
+      for (const auto& key : original.keys) {
+        if (key.bytes.size() != size) r = "err:size";
+      }
+      if (r == "ok" && g_suites->UtilitySuite6()->AEGP_StartUndoGroup("Vynk: teammate edit")) r = "err:undo";
+      if (r == "ok") {
+        r = putArb(streamH, value, data);
+        if (r == "ok" && !arbMatches(streamH, data)) r = "err:verify";
+        if (r != "ok") {
+          if (putArb(streamH, value, original) != "ok" || !arbMatches(streamH, original)) r += "; rollback failed";
+        }
         g_suites->UtilitySuite6()->AEGP_EndUndoGroup();
       }
     }

@@ -40,7 +40,17 @@ Everyone in a room must update: 0.8 and 0.7 panels cannot share a session.
 - **Every comp stays in step, not just the open one.** Comps nobody is looking at are
   compared in the background and repaired if they drift.
 
-Not yet synced: the Pattern Overlay layer style, and Curves that are keyframed.
+- **Animated Curves and compatible custom controls sync.** *Before:* only static values
+  were supported. *After:* complete animations include key times, values, interpolation
+  and temporal ease. Install the current native companion on every editor's machine.
+- **Pattern Overlay controls work from a shared base.** *Before:* a layer repair could
+  reject a pattern style that already existed. *After:* existing pattern styles and
+  their animated controls are recognized and preserved.
+
+New Pattern Overlay artwork still needs to be included in a shared base project.
+Import the styled PSD before sharing; share an updated base when adding new artwork.
+Style rebuilds that would discard an existing pattern are refused. Custom-data
+layouts must match; each control supports up to 600 keys / 512 KiB of encoded data.
 
 ## [0.7.7] - 2026-10-29
 

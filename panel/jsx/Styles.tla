@@ -7,6 +7,9 @@
 \* result contract and cold menu registration (Beta needs Show Styles first),
 \* not focus acquisition, numeric IDs, property values or eventual retry after
 \* an ignored command. The real AE gate verifies those native primitives.
+\* Pattern Overlay artwork preflights are single-call rejection/recognition
+\* checks outside this menu abstraction; test-host-styles covers prop/upsert
+\* preservation and the real-AE fixture checks existing artwork and rendering.
 CONSTANTS CheckExact, WarmMenu
 VARIABLES phase, applied, ignored, acknowledged, registered
 vars == <<phase, applied, ignored, acknowledged, registered>>

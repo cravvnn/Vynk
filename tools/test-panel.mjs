@@ -768,7 +768,7 @@ function nativeReadPanel() {
     snaps: [{ id: 'id1|Old', iid: 1, full: 1, s: {}, sel: [], layers: [{ sid: 'id2', lid: 2, kind: 'solid', a: { name: 'Old' }, g: {}, p: { curves: { cx: 1, fx: 1, pi: 1, m: 1 } } }] }]
   }));
   assert.equal(panel.state.cycleBusy, true);
-  return { panel, replies, complete: () => panel.run("nativeWaiting['1'](['ARBGET','1','ok','1:1:4:abcd'])") };
+  return { panel, replies, complete: () => panel.run("nativeWaiting['1'](['ARBGET','1','ok','1:1:2:abcd'])") };
 }
 
 test('an old native read callback cannot clear a replacement room cycle', () => {

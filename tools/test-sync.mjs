@@ -111,6 +111,35 @@ function converges(name, prev, next) {
   check('float noise is ignored', S.diff(clone(a), c).ops.length === 0);
 }
 
+// --- custom-data animations
+{
+  const curve = FX + '/ADBE CurvesCustom/ADBE CurvesCustom-0001';
+  const a = comp([layer('id1'), layer('id2')]);
+  a.layers[0].p[curve] = { cx: 1, fx: 1, pi: 2, m: 1, v: { arb: 'aabb' } };
+  const b = clone(a);
+  b.layers[0].p[curve].v = { arbKeys: [
+    { t: '-1/3', i: [2, 2], f: 0, e: [[0, 0.66, 0, 0.77]], v: 'aabb' },
+    { t: '7/3', i: [3, 3], f: 0, e: [], v: 'ccdd' }
+  ] };
+  const ops = converges('static custom data -> complete animation converges', a, b);
+  check('a custom animation is one atomic property edit', ops.length === 1 && ops[0].path === curve);
+  const noisy = clone(b);
+  noisy.layers[0].p[curve].v.arbKeys[0].e[0][1] += 1e-8;
+  noisy.layers[0].p[curve].fx = 4;
+  check('recomputed custom ease noise and native positions do not echo', S.diff(clone(b), noisy).ops.length === 0);
+  const changed = clone(b);
+  changed.layers[0].p[curve].v.arbKeys[1].v = 'eeff';
+  converges('a different custom-data key value converges', b, changed);
+  changed.layers[0].p[curve].v.arbKeys[1].t = '8/3';
+  converges('a different custom-data key time converges', b, changed);
+  const shadow = clone(a);
+  const actual = clone(b); actual.layers[1].p[OPA].v = 42;
+  S.adopt(shadow, actual, ops);
+  const local = S.diff(shadow, actual).ops;
+  check('adopting remote custom keys keeps a disjoint local edit', local.length === 1 && local[0].target.layer === 'id2');
+  check('native custom animation stays outside machine-independent fingerprints', S.digest(a).hash === S.digest(b).hash);
+}
+
 // --- keys
 {
   const a = comp([layer('id1')]);

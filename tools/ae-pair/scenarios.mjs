@@ -2,6 +2,8 @@
 // run inside After Effects with `comp` (the Main comp), `L(name)` (layer by
 // name) and `vynkPair` in scope. `who` is the instance that makes the edit.
 import { recoveryScenarios, shareFixture } from './recovery-scenarios.mjs';
+import { customDataScenarios } from './custom-data-scenarios.mjs';
+import { patternScenarios } from './pattern-scenarios.mjs';
 const PRESETS = 'C:/Program Files/Adobe/Adobe After Effects 2025/Support Files/Presets/';
 
 const ids = async (h, who, layer) => JSON.parse(await h.jsx(who, "(function(){var c=vynkPair.comp('Main');var l=vynkPair.layer(c,'" + layer + "');return JSON.stringify([c.id,l?l.id:-1]);})()"));
@@ -211,6 +213,8 @@ export const scenarios = [
     run: (h) => copyCurve(h, 'B', 'Contrast - luminance.ffx', 'Blue'),
     check: (h) => sameCurves(h, 'Blue')
   },
+  ...patternScenarios,
+  ...customDataScenarios,
   ...recoveryScenarios,
   { name: 'stress: 100 layers with keys and effects', who: 'A', timeout: 120000, jsx: `for (var i = 0; i < 100; i++) { var s = comp.layers.addSolid([0.2, 0.4, 0.6], 'S' + i, 1920, 1080, 1, 10); var p = s.property('ADBE Transform Group').property('ADBE Position'); for (var k = 0; k < 20; k++) p.setValueAtTime(k * 0.4, [k * 50, i * 10]); s.property('ADBE Effect Parade').addProperty('ADBE Gaussian Blur 2').property('ADBE Gaussian Blur 2-0001').setValue(i); }` },
   { name: 'edit inside the 100-layer comp', who: 'A', timeout: 60000, jsx: `L('S50').property('ADBE Transform Group').property('ADBE Opacity').setValue(12);` },

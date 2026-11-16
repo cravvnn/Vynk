@@ -2,7 +2,7 @@
   'use strict';
 
   var PROTO = 2;
-  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev') + ' m3.9';
+  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev') + ' m3.10';
   var CURSOR_FLUSH_MS = 33;
   var POLL_FAST_MS = 200;
   var POLL_BURST_MS = 2500;
@@ -2127,22 +2127,6 @@
     state.cycleBusy = true;
     state.cycleStartedAt = Date.now();
     var gen = state.pollGeneration;
-    // Custom data from teammates is written natively first, so the read that
-    // follows already shows it and it is adopted rather than sent back.
-    var sets = customDataSets(ops);
-    if (sets.lines.length > 0) {
-      nativeCalls(sets.lines, function (replies) {
-        for (var si = 0; si < sets.ops.length; si++) {
-          var reply = replies[si];
-          sets.ops[si]._arb = !reply ? 'custom data: no answer from the Vynk plug-in' : reply[2] === 'ok' ? '' : 'custom data: ' + reply[2];
-        }
-        if (stale() || state.pollGeneration !== gen) {
-          return;
-        }
-        evalCycle();
-      });
-      return;
-    }
     evalCycle();
 
     function evalCycle() {
@@ -2164,9 +2148,6 @@
           return;
         }
         if (out.error) logThrottled('cycleerr', 'sync error: ' + out.error, 5000);
-        for (var ri = 0; ri < done; ri++) {
-          if (ops[ri]._arb !== undefined) out.r[ri] = ops[ri]._arb;
-        }
         state.viewerSid = out.viewer ? out.active : null;
         var finish = function () {
         var took = Date.now() - state.cycleStartedAt;
@@ -2258,7 +2239,8 @@
   // Curves and other "arbitrary data" parameters cannot be read or written by
   // scripts. The native companion does both, addressed by comp item id, layer
   // id, effect position and parameter position; the bytes travel as hex in an
-  // ordinary prop op ({ v: { arb: hex } }).
+  // ordinary prop op ({ v: { arb: data } }). Animated data includes its whole
+  // key sequence, times and interpolation; it is one value for conflict ordering.
   var NATIVE_TIMEOUT_MS = 3000;
   var nativeSeq = 0;
   var nativeWaiting = {};
@@ -2296,7 +2278,51 @@
   }
 
   function arbHex(value) {
-    return value && value.v && typeof value.v.arb === 'string' ? value.v.arb : '';
+    var v = value && value.v;
+    if (!v) return '';
+    if (typeof v.arb === 'string') return v.arb || 'invalid';
+    if (!v.arbKeys) return '';
+    if (Object.prototype.toString.call(v.arbKeys) !== '[object Array]') return 'invalid';
+    var data = ['K'];
+    for (var i = 0; i < v.arbKeys.length; i++) {
+      var key = v.arbKeys[i];
+      if (!key || !key.i || key.i.length !== 2 || typeof key.t !== 'string' || typeof key.v !== 'string') return 'invalid';
+      var ease = [];
+      for (var d = 0; key.e && d < key.e.length; d++) ease.push(key.e[d].join('~'));
+      data.push([key.t, key.i[0], key.i[1], key.f, ease.join('/'), key.v].join(','));
+    }
+    return data.join('|');
+  }
+
+  function readArbData(parts) {
+    var data = parts[3];
+    if (!data) return null;
+    if (parts[2] !== 'K') return data.length === Number(parts[2]) * 2 && /^[0-9a-f]+$/i.test(data) ? { arb: data } : null;
+    var rows = data.split('|');
+    if (rows.shift() !== 'K' || !rows.length) return null;
+    var keys = [];
+    for (var i = 0; i < rows.length; i++) {
+      var fields = rows[i].split(',');
+      if (fields.length !== 6 || !/^-?\d+\/[1-9]\d*$/.test(fields[0]) || !/^[1-3]$/.test(fields[1]) ||
+          !/^[1-3]$/.test(fields[2]) || !/^[0-3]$/.test(fields[3]) || fields[5].length % 2 || !/^[0-9a-f]+$/i.test(fields[5])) return null;
+      var key = { t: fields[0], i: [Number(fields[1]), Number(fields[2])], f: Number(fields[3]), e: [], v: fields[5] };
+      if (fields[4]) {
+        var dims = fields[4].split('/');
+        for (var d = 0; d < dims.length; d++) {
+          var numbers = dims[d].split('~');
+          if (numbers.length !== 4) return null;
+          var ease = [];
+          for (var n = 0; n < 4; n++) {
+            var number = Number(numbers[n]);
+            if (!isFinite(number)) return null;
+            ease.push(number);
+          }
+          key.e.push(ease);
+        }
+      }
+      keys.push(key);
+    }
+    return { arbKeys: keys };
   }
 
   function findLayerIn(comp, sid) {
@@ -2305,30 +2331,6 @@
       if (comp.layers[i].sid === sid) return comp.layers[i];
     }
     return null;
-  }
-
-  // Custom data a teammate changed on an existing effect: resolved against
-  // this machine's own positions and written before the next read.
-  function customDataSets(ops) {
-    var out = { lines: [], ops: [] };
-    for (var i = 0; i < ops.length; i++) {
-      var op = ops[i];
-      if (op.kind !== 'prop' || !arbHex(op.value)) continue;
-      if (!state.aegp.connected) {
-        op._arb = 'custom data (Curves...) needs the Vynk plug-in installed';
-        continue;
-      }
-      var comp = state.shadows[Sync.sidPart(op.target.comp)];
-      var layer = findLayerIn(comp, op.target.layer);
-      var rec = layer ? layer.p[op.path] : null;
-      if (!comp || comp.iid === undefined || !layer || layer.lid === undefined || !rec || !rec.cx) {
-        op._arb = 'custom data: effect not read here yet';
-        continue;
-      }
-      out.lines.push(['ARBSET', comp.iid, layer.lid, rec.fx, rec.pi, arbHex(op.value)]);
-      out.ops.push(op);
-    }
-    return out;
   }
 
   function hasCustom(layer) {
@@ -2340,7 +2342,9 @@
   }
 
   function customDataNeeded(out, applied) {
-    if (!out || !out.snaps || !state.aegp.connected) return false;
+    if (!out || !out.snaps) return false;
+    if (customDataSets(applied, out.snaps).needed) return true;
+    if (!state.aegp.connected) return false;
     for (var i = 0; i < out.snaps.length; i++) {
       for (var j = 0; j < out.snaps[i].layers.length; j++) {
         if (hasCustom(out.snaps[i].layers[j])) return true;
@@ -2349,14 +2353,18 @@
     return false;
   }
 
-  // Custom data inside an effect or layer a teammate just created.
-  function createdCustomData(applied, snaps) {
-    var lines = [];
+  // Resolve against the host read after structural setters, including newly
+  // created effects. Native key times are relative to the layer.
+  function customDataSets(applied, snaps) {
+    var out = { lines: [], owners: [], errors: {}, needed: false };
     for (var i = 0; i < applied.length; i++) {
       var op = applied[i];
       var recs = null;
       var prefix = '';
-      if (op.kind === 'gadd' && op.value && op.value.p) {
+      if (op.kind === 'prop' && arbHex(op.value)) {
+        recs = {};
+        recs[op.path] = op.value;
+      } else if (op.kind === 'gadd' && op.value && op.value.p) {
         recs = op.value.p;
         prefix = op.path + '/' + op.value.key;
       } else if (op.kind === 'add' && op.value && op.value.layer) {
@@ -2368,20 +2376,41 @@
         if (Sync.sidPart(snaps[s].id) === Sync.sidPart(op.target.comp)) snap = snaps[s];
       }
       var layer = findLayerIn(snap, op.target.layer);
-      if (!snap || snap.iid === undefined || !layer || layer.lid === undefined || layer.lite) continue;
       for (var rel in recs) {
         var hex = arbHex(recs[rel]);
         if (!hex) continue;
+        out.needed = true;
+        if (!state.aegp.connected) {
+          out.errors[i] = 'custom data (Curves...) needs the Vynk plug-in installed';
+          continue;
+        }
+        if (!snap || snap.iid === undefined || !layer || layer.lid === undefined || layer.lite) {
+          out.errors[i] = 'custom data: layer not found in the host read';
+          continue;
+        }
         var rec = layer.p[prefix ? prefix + '/' + rel : rel];
-        if (rec && rec.cx) lines.push(['ARBSET', snap.iid, layer.lid, rec.fx, rec.pi, hex]);
+        if (!rec || !rec.cx) {
+          out.errors[i] = 'custom data: effect not found in the host read';
+          continue;
+        }
+        out.lines.push(['ARBSET', snap.iid, layer.lid, rec.fx, rec.pi, hex]);
+        out.owners.push(i);
       }
     }
-    return lines;
+    return out;
   }
 
   function customDataPass(out, applied, cb) {
     var snaps = out.snaps;
-    nativeCalls(createdCustomData(applied, snaps), function () {
+    var sets = customDataSets(applied, snaps);
+    for (var owner in sets.errors) out.r[owner] = sets.errors[owner];
+    nativeCalls(sets.lines, function (setReplies) {
+      for (var si = 0; si < sets.owners.length; si++) {
+        var setReply = setReplies[si];
+        if (!setReply || setReply[2] !== 'ok') {
+          out.r[sets.owners[si]] = !setReply ? 'custom data: no answer from the Vynk plug-in' : 'custom data: ' + setReply[2];
+        }
+      }
       var lines = [];
       var targets = [];
       for (var i = 0; i < snaps.length; i++) {
@@ -2402,18 +2431,18 @@
             var items = reply[3].split(';');
             for (var k = 0; k < items.length; k++) {
               var parts = items[k].split(':');
-              if (parts.length >= 4) values[parts[0] + ':' + parts[1]] = parts[3];
+              if (parts.length === 4) values[parts[0] + ':' + parts[1]] = readArbData(parts);
             }
           }
           var held = findLayerIn(state.shadows[Sync.sidPart(snap.id)], layer.sid);
           for (var path in layer.p) {
             var rec = layer.p[path];
             if (!rec.cx) continue;
-            var hex = values[rec.fx + ':' + rec.pi];
-            if (hex) {
-              rec.v = { arb: hex };
+            var value = values[rec.fx + ':' + rec.pi];
+            if (value) {
+              rec.v = value;
             } else if (held && held.p[path] && held.p[path].v) {
-              // Unknown this time (keyframed, no answer): keep what we had.
+              // An incomplete read must not turn a known animation into a reset.
               rec.v = held.p[path].v;
             }
           }

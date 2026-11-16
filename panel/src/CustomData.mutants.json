@@ -1,0 +1,3 @@
+[
+  { "name": "write custom data before effect reconstruction", "replace": [["phase = \"host\" /\\ rebuilt = FALSE", "phase = \"native\" /\\ rebuilt = FALSE"]], "expect": "CreatedValuePreserved" }
+]

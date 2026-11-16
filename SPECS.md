@@ -22,6 +22,8 @@ own regression checks LF/CRLF files through absolute and relative CLI paths.
 | `panel/src/main.js` base replacement | Confirmation, guarded posted open, socket close, stale seen IDs, changed shared base, fresh welcome | `BaseOpen.tla`: 58 states, eight mutants; affirmative confirmation is required, new edits or a different project cannot be overwritten, an already-posted open survives socket/base changes, new history is replayed only onto the matching downloaded checkpoint. Excludes manual panel reload during a native call and native modal dialogs. |
 | `panel/jsx/sync.jsx` local base view | A shared file overwriting the recipient's playheads during base open | `BaseView.tla`: four states, three mutants; one atomic open/restore, comp order changes, one local seek and a new comp. Existing times restore by SID, new comps start at zero; no time enters relay ops. Real native setter failures are counted instead of disguising an already-completed open as cancellation. |
 | `panel/jsx/sync.jsx` style result | An ignored removal acknowledged as success; unregistered cold Beta menu commands | `Styles.tla`: one requested removal, lazy command registration and a successful/ignored menu result; two mutants. An acknowledged set must be exact; supported commands complete after registration. Numeric IDs, focus and eventual retry after an ignored command remain real-AE gates. Direct engine tests use 3739 to initialize and 3744 to remove styles while retaining unrelated effects. |
+| `panel/src/main.js` custom-data phase | A native write overwritten by host effect reconstruction; stale parameter ordinals; ignored created-control failures | `CustomData.tla`: one effect reconstruction, native whole-value write and read; 4 states, one ordering mutant. Existing and created controls use the same post-host phase. Direct panel regressions check fresh positions, native errors, missing companion, timeout and incomplete reads. |
+| `aegp/src/AeHost.cpp` custom-data writes | Deleting keys before validation, a failed/silently ignored setter reported as success, incomplete restoration | `ArbWrite.tla`: payload/layout compatibility, setter and verification results, restoration success/failure; 70 states, five mutants. Rejected inputs remain unchanged; success requires verified data; SDK failures remain errors even when rollback fails. The native codec has no persistent state and is tested without the AE SDK in CI. Real handles, undo, layer-time conversion and effect formats are two-AE gates. |
 | `panel/src/main.js` remaining sync | Snapshot contents, repair, storage exhaustion, queue scope and native writes already dispatched | Remaining state coverage is incomplete. Direct panel tests cover room-token/project binding and storage/capacity failure across reload; these paths are not yet composed into Delivery. Request-method and history validation defects reproduce in one call and have direct regressions. The asynchronous model checks callback ownership, not AE/native execution after dispatch. |
 | `panel/src/main.js` observation / repair | Repeated item upserts forgetting an observed comp, first remote read delayed past a local edit, and repair deleting an unmatched peer layer | `Observation.tla`: one scalar/layer, upsert and local edit; three mutants. Existing comp baselines survive announcements, new remote comps are read in the apply call, and repair never deletes peer-only layers. Host read failure, reload bootstrap and arbitrary structural conflicts remain outside the model. |
 | `panel/src/main.js` full repair response | Equal layer hashes hiding different order or composition settings | `RepairOrder.tla`: a quiet requester/reference, one full response and successful host apply; one mutant. Order and settings are included before testing whether the response is empty. Delivery covers transport; arbitrary structural conflicts remain outside this model. |
@@ -37,6 +39,19 @@ The session model composes one panel lifecycle with abstract relay/host delivery
 Delivery composes two panel queues with an ordered accepted-ID relay interface.
 The intended full sync model also includes value-level LWW and serialized AE
 apply/read steps. That coverage is not complete yet.
+
+Custom-data simplification removes the separate pre-host write phase and `_arb`
+result bookkeeping. Existing and created controls resolve against the fresh host
+read and share one write/read phase, without a new pending queue. Layer-time
+coordinates remove composition offset/stretch conversion from the native payload;
+the comp-time prototype failed on reversed layers during the real-AE gate.
+Temporal ease is stored numerically in the ordinary value tree, so the existing
+float tolerance prevents echoes from recomputed ease noise. Bytes and rational
+key times remain exact. CustomData has four reachable states; the pre-host ordering
+mutant loses a reconstructed value in four steps. Pattern artwork preflights are
+single-call guards covered directly by host tests; Styles still abstracts only the
+menu result/registration contract. An original synthetic PSD and rendered-pixel
+comparison check the supported shared-base Pattern Overlay workflow.
 
 Observation simplification removed baseline invalidation on item upserts and the
 `agreed`/`fresh` repair-deletion state, with no replacement flags. The baseline

@@ -38,6 +38,7 @@ $.global.vynkSync = (function () {
   };
   var CMD_REMOVE_STYLES = 3744;
   var CMD_SHOW_STYLES = 3739;
+  var PATTERN_STYLE = 'patternFill/enabled';
   var NEEDS_VIEWER = 'needs the comp open';
   var focusedNow = true;
 
@@ -486,7 +487,7 @@ $.global.vynkSync = (function () {
     }
     for (var i = 1; i <= group.numProperties; i++) {
       var c = group.property(i);
-      try { if (c.canSetEnabled && STYLE_CMD[c.matchName]) list.push(c.matchName); } catch (e1) {}
+      try { if (c.canSetEnabled && (STYLE_CMD[c.matchName] || c.matchName === PATTERN_STYLE)) list.push(c.matchName); } catch (e1) {}
     }
     return list;
   }
@@ -498,7 +499,19 @@ $.global.vynkSync = (function () {
     return false;
   }
 
+  function patternProblem(layer, want) {
+    if (!hasItem(want, PATTERN_STYLE)) return '';
+    var have = layer ? appliedStyles(layer.property(STYLES)) : [];
+    if (!hasItem(have, PATTERN_STYLE)) return 'Pattern Overlay artwork must be present in the shared base project';
+    for (var i = 0; i < have.length; i++) {
+      if (!hasItem(want, have[i])) return 'cannot rebuild layer styles without losing Pattern Overlay artwork';
+    }
+    return '';
+  }
+
   function setStyles(layer, want) {
+    var problem = patternProblem(layer, want);
+    if (problem) return problem;
     var group = layer.property(STYLES);
     if (!group) return 'no layer styles';
     var have = appliedStyles(group);
@@ -512,11 +525,11 @@ $.global.vynkSync = (function () {
       if (!hasItem(have, want[i])) missing.push(want[i]);
     }
     if (!extra && missing.length === 0) return '';
-    // The Layer Styles menu only acts while After Effects is the foreground app.
-    if (!focusedNow) return NEEDS_VIEWER;
     for (i = 0; i < missing.length; i++) {
       if (!STYLE_CMD[missing[i]]) return 'style not scriptable: ' + missing[i];
     }
+    // The Layer Styles menu only acts while After Effects is the foreground app.
+    if (!focusedNow) return NEEDS_VIEWER;
     var comp = layer.containingComp;
     if (app.project.activeItem !== comp) return NEEDS_VIEWER;
     for (i = 1; i <= comp.numLayers; i++) {
@@ -1064,6 +1077,9 @@ $.global.vynkSync = (function () {
     if (!d) return 'missing layer data';
     var sid = op.target.layer;
     var layer = findLayer(comp, sid);
+    var wantedStyles = d.p ? d.p[STYLES + '@styles'] : null;
+    var patternError = patternProblem(layer, wantedStyles ? wantedStyles.v || [] : []);
+    if (patternError) return patternError;
     var a = d.a || {};
     var name = a.name ? String(a.name) : 'Layer';
     var src = d.src || {};

@@ -1,0 +1,7 @@
+[
+  { "name": "delete keys before validating the whole payload", "replace": [["IF valid /\\ layout", "IF layout"]], "expect": "RejectedUnchanged" },
+  { "name": "ignore a mismatched arbitrary-data layout", "replace": [["IF valid /\\ layout", "IF valid"]], "expect": "RejectedUnchanged" },
+  { "name": "acknowledge a failed setter", "replace": [["reported' = \"error\"\n               /\\ UNCHANGED", "reported' = \"ok\"\n               /\\ UNCHANGED"]], "expect": "NoFalseSuccess" },
+  { "name": "skip restoration after a setter failure", "replace": [["data' = IF restore THEN \"old\" ELSE \"partial\"", "data' = \"partial\""]], "expect": "RestoredWhenPossible" },
+  { "name": "skip native readback verification", "replace": [["phase' = IF setter /\\ verified THEN", "phase' = IF setter THEN"], ["reported' = IF setter /\\ verified THEN", "reported' = IF setter THEN"]], "expect": "NoFalseSuccess" }
+]
