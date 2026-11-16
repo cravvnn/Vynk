@@ -1,4 +1,5 @@
 #include "ArbData.h"
+#include "NativeScript.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -8,6 +9,9 @@ void check(bool ok, const char* message) {
 
 int main() {
   try {
+    check(NativeScript::quote("\"\\\n\t\r") == "\"\\\"\\\\\\u000a\\u0009\\u000d\"", "native script quoting");
+    check(NativeScript::quote(std::string("a\0b", 3)) == "\"a\\u0000b\"", "native script embedded NUL");
+    check(NativeScript::quote("\xe2\x80\xa8\xe2\x80\xa9\xc3\xa9") == "\"\\u2028\\u2029\xc3\xa9\"", "ES3 line separators and UTF-8");
     ArbData::Value value;
     check(ArbData::parse("00aAFF", value) && !value.animated && value.keys[0].bytes.size() == 3, "static bytes");
     check(ArbData::parse("K|-1/2,3,3,0,,aabb|7/3,2,2,3,0~0.75~0~0.60,ccdd", value), "animated bytes and metadata");

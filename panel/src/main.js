@@ -2,7 +2,7 @@
   'use strict';
 
   var PROTO = 2;
-  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev') + ' m3.10';
+  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev') + ' m3.11';
   var CURSOR_FLUSH_MS = 33;
   var POLL_FAST_MS = 200;
   var POLL_BURST_MS = 2500;
@@ -2130,8 +2130,7 @@
     evalCycle();
 
     function evalCycle() {
-    cs.evalScript(
-      '(typeof vynkSync === "undefined") ? "nosync" : vynkSync.cycle(' + JSON.stringify(JSON.stringify(req)) + ')',
+    hostCycle(req,
       function (res) {
         if (stale() || state.pollGeneration !== gen) return;
         state.cycleBusy = false;
@@ -2139,11 +2138,12 @@
         if (typeof res === 'string' && res.charAt(0) === '{') {
           try { out = JSON.parse(res); } catch (e) { out = null; }
         }
+        if (out && out.identityError) { res = out.error; out = null; }
         var done = out && out.r ? out.r.length : 0;
         if (done < ops.length) state.inbox.unshift(ops.slice(done));
         if (!out) {
           // AE refuses scripts while a modal dialog is open; just try again.
-          logThrottled('cyclefail', 'sync paused: After Effects is busy (' + String(res).slice(0, 80) + ')', 10000);
+          logThrottled('cyclefail', 'sync paused: ' + String(res).slice(0, 120), 10000);
           kickCycle(1000);
           return;
         }
@@ -2245,7 +2245,18 @@
   var nativeSeq = 0;
   var nativeWaiting = {};
 
-  function nativeCalls(lines, cb) {
+  function hostCycle(req, cb) {
+    if (parseFloat(hostVersion) < 22 || state.nativeIdentity) {
+      nativeCalls([['ARBCYCLE', JSON.stringify(req)]], function (replies) {
+        var reply = replies[0];
+        cb(reply && reply[2] === 'ok' ? reply[3] : 'native identity unavailable; needs the current Vynk plug-in');
+      }, CYCLE_WATCHDOG_MS);
+      return;
+    }
+    cs.evalScript('(typeof vynkSync === "undefined") ? "nosync" : vynkSync.cycle(' + JSON.stringify(JSON.stringify(req)) + ')', cb);
+  }
+
+  function nativeCalls(lines, cb, timeoutMs) {
     var replies = [];
     var left = lines.length;
     var ids = [];
@@ -2263,7 +2274,7 @@
       cb(replies);
       return;
     }
-    timer = later(end, NATIVE_TIMEOUT_MS);
+    timer = later(end, timeoutMs || NATIVE_TIMEOUT_MS);
     for (var i = 0; i < lines.length; i++) {
       (function (index) {
         var id = String(++nativeSeq);
@@ -2660,7 +2671,6 @@
         lite.kind = held.kind;
         if (held.src) lite.src = held.src;
         if (held.box) lite.box = held.box;
-        if (held.lid !== undefined) lite.lid = held.lid;
         delete lite.lite;
       }
       if (!unknown) delete state.deepQueue[compSid];

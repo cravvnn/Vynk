@@ -38,6 +38,9 @@ jobs:
           node tools/check-es3.mjs
           if ($LASTEXITCODE -ne 0) { exit 1 }
           node tools/check-es3.mjs panel/jsx/sync.jsx
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node tools/check-aegp-api.mjs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           Copy-Item panel/jsx/sync.jsx "$env:TEMP/sync.js" -Force
           node --check "$env:TEMP/sync.js"
           if ($LASTEXITCODE -ne 0) { exit 1 }

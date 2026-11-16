@@ -20,6 +20,7 @@
 #include <iomanip>
 #include <locale>
 #include "ArbData.h"
+#include "NativeScript.h"
 
 namespace {
 
@@ -136,15 +137,15 @@ void pollActiveComp() {
   std::string compKey(keyBuf);
 
   AEGP_CompH compH = nullptr;
-  if (g_suites->CompSuite12()->AEGP_GetCompFromItem(itemH, &compH) || !compH) return;
+  if (g_suites->CompSuite10()->AEGP_GetCompFromItem(itemH, &compH) || !compH) return;
 
   A_long numLayers = 0;
-  g_suites->LayerSuite9()->AEGP_GetCompNumLayers(compH, &numLayers);
+  g_suites->LayerSuite8()->AEGP_GetCompNumLayers(compH, &numLayers);
 
   // Layer selection via collection (no index-array API exists).
   std::string sel;
   AEGP_Collection2H collH = nullptr;
-  if (!g_suites->CompSuite12()->AEGP_GetNewCollectionFromCompSelection(g_pluginId, compH, &collH) &&
+  if (!g_suites->CompSuite10()->AEGP_GetNewCollectionFromCompSelection(g_pluginId, compH, &collH) &&
       collH) {
     A_u_long n = 0;
     g_suites->CollectionSuite2()->AEGP_GetCollectionNumItems(collH, &n);
@@ -154,7 +155,7 @@ void pollActiveComp() {
       if (g_suites->CollectionSuite2()->AEGP_GetCollectionItemByIndex(collH, i, &ci)) continue;
       if (ci.type != AEGP_CollectionItemType_LAYER) continue;
       AEGP_LayerIDVal idv = 0;
-      if (g_suites->LayerSuite9()->AEGP_GetLayerID(ci.u.layer.layerH, &idv)) continue;
+      if (g_suites->LayerSuite8()->AEGP_GetLayerID(ci.u.layer.layerH, &idv)) continue;
       char b[32];
       sprintf_s(b, "%ld", idv);
       if (!sel.empty()) sel += ",";
@@ -212,7 +213,7 @@ AEGP_CompH findCompByItemId(A_long wantId) {
     g_suites->ItemSuite9()->AEGP_GetItemType(itemH, &type);
     if (id == wantId && type == AEGP_ItemType_COMP) {
       AEGP_CompH compH = nullptr;
-      if (!g_suites->CompSuite12()->AEGP_GetCompFromItem(itemH, &compH)) return compH;
+      if (!g_suites->CompSuite10()->AEGP_GetCompFromItem(itemH, &compH)) return compH;
       return nullptr;
     }
     AEGP_ItemH next = nullptr;
@@ -223,15 +224,91 @@ AEGP_CompH findCompByItemId(A_long wantId) {
 }
 
 AEGP_LayerH findLayerById(AEGP_CompH compH, A_long wantId) {
-  A_long n = 0;
-  g_suites->LayerSuite9()->AEGP_GetCompNumLayers(compH, &n);
-  for (A_long i = 0; i < n; i++) {
-    AEGP_LayerH layerH = nullptr;
-    if (g_suites->LayerSuite9()->AEGP_GetCompLayerByIndex(compH, i, &layerH) || !layerH) continue;
-    AEGP_LayerIDVal id = 0;
-    if (!g_suites->LayerSuite9()->AEGP_GetLayerID(layerH, &id) && static_cast<A_long>(id) == wantId) return layerH;
+  AEGP_LayerH layerH = nullptr;
+  if (g_suites->LayerSuite8()->AEGP_GetLayerFromLayerID(compH, wantId, &layerH)) return nullptr;
+  return layerH;
+}
+
+bool nativeIdentityTable(std::string& table) {
+  table = "[";
+  AEGP_ProjectH projH = nullptr;
+  AEGP_ItemH itemH = nullptr;
+  if (g_suites->ProjSuite6()->AEGP_GetProjectByIndex(0, &projH) || !projH ||
+      g_suites->ItemSuite9()->AEGP_GetFirstProjItem(projH, &itemH)) return false;
+  bool first = true;
+  while (itemH) {
+    AEGP_ItemType type = AEGP_ItemType_NONE;
+    if (g_suites->ItemSuite9()->AEGP_GetItemType(itemH, &type)) return false;
+    if (type == AEGP_ItemType_COMP) {
+      A_long itemId = 0, count = 0;
+      AEGP_CompH compH = nullptr;
+      if (g_suites->ItemSuite9()->AEGP_GetItemID(itemH, &itemId) || itemId <= 0 ||
+          g_suites->CompSuite10()->AEGP_GetCompFromItem(itemH, &compH) || !compH ||
+          g_suites->LayerSuite8()->AEGP_GetCompNumLayers(compH, &count) || count < 0) return false;
+      if (!first) table += ",";
+      first = false;
+      table += "[" + std::to_string(itemId) + ",[";
+      for (A_long i = 0; i < count; i++) {
+        AEGP_LayerH layerH = nullptr;
+        AEGP_LayerIDVal id = 0;
+        if (g_suites->LayerSuite8()->AEGP_GetCompLayerByIndex(compH, i, &layerH) || !layerH ||
+            g_suites->LayerSuite8()->AEGP_GetLayerID(layerH, &id) || id <= 0) return false;
+        if (i) table += ",";
+        table += std::to_string(id);
+      }
+      table += "]]";
+    }
+    AEGP_ItemH next = nullptr;
+    if (g_suites->ItemSuite9()->AEGP_GetNextProjItem(projH, itemH, &next)) return false;
+    itemH = next;
   }
-  return nullptr;
+  table += "]";
+  return true;
+}
+
+bool executeScript(const std::string& script, std::string& result) {
+  A_Boolean available = FALSE;
+  if (g_suites->UtilitySuite6()->AEGP_IsScriptingAvailable(&available) || !available) return false;
+  AEGP_MemHandle resultH = nullptr, errorH = nullptr;
+  A_Err err = g_suites->UtilitySuite6()->AEGP_ExecuteScript(g_pluginId, script.c_str(), FALSE, &resultH, &errorH);
+  bool ok = !err && resultH && !errorH;
+  if (resultH) {
+    char* text = nullptr;
+    if (!g_suites->MemorySuite1()->AEGP_LockMemHandle(resultH, reinterpret_cast<void**>(&text))) {
+      if (ok && text) result = text;
+      else ok = false;
+      g_suites->MemorySuite1()->AEGP_UnlockMemHandle(resultH);
+    } else ok = false;
+    g_suites->MemorySuite1()->AEGP_FreeMemHandle(resultH);
+  }
+  if (errorH) g_suites->MemorySuite1()->AEGP_FreeMemHandle(errorH);
+  return ok && !result.empty();
+}
+
+// The ID tables live only on this main-thread command's stack. No binding is
+// retained between requests, project switches, undo, duplication or reorder.
+void cmdNativeCycle(const std::vector<std::string>& f) {
+  const std::string prefix = "ARBCYCLE\t" + (f.size() > 1 ? f[1] : "") + "\t";
+  if (f.size() != 3) { emit(prefix + "err:args"); return; }
+  std::string table, result;
+  if (!nativeIdentityTable(table) ||
+      !executeScript("vynkSync.cycleNative(" + NativeScript::quote(f[2]) + "," + table + ")", result)) {
+    emit(prefix + "err:native identity script");
+    return;
+  }
+  std::string refreshed;
+  if (nativeIdentityTable(table) && executeScript("vynkSync.refreshNativeIds(" + NativeScript::quote(result) + "," + table + ")", refreshed)) {
+    result = std::move(refreshed);
+  } else {
+    // The host already applied its successful prefix. Preserve its receipts;
+    // a missing ID fails the custom-data phase rather than replaying that prefix.
+    logLine("native identity refresh failed");
+  }
+  if (result.empty() || result[0] != '{' || result.find_first_of("\r\n\t") != std::string::npos) {
+    emit(prefix + "err:native identity result");
+    return;
+  }
+  emit(prefix + "ok\t" + result);
 }
 
 const char kHex[] = "0123456789abcdef";
@@ -250,16 +327,16 @@ std::string toHex(const unsigned char* p, size_t n) {
 template <typename Fn>
 std::string withParam(AEGP_LayerH layerH, A_long fx, A_long param, Fn fn) {
   AEGP_EffectRefH effectH = nullptr;
-  if (g_suites->EffectSuite5()->AEGP_GetLayerEffectByIndex(g_pluginId, layerH, fx - 1, &effectH) || !effectH) return "err:no effect";
+  if (g_suites->EffectSuite4()->AEGP_GetLayerEffectByIndex(g_pluginId, layerH, fx - 1, &effectH) || !effectH) return "err:no effect";
   std::string result;
   AEGP_StreamRefH streamH = nullptr;
-  if (g_suites->StreamSuite6()->AEGP_GetNewEffectStreamByIndex(g_pluginId, effectH, param, &streamH) || !streamH) {
+  if (g_suites->StreamSuite5()->AEGP_GetNewEffectStreamByIndex(g_pluginId, effectH, param, &streamH) || !streamH) {
     result = "err:no param";
   } else {
     result = fn(streamH);
-    g_suites->StreamSuite6()->AEGP_DisposeStream(streamH);
+    g_suites->StreamSuite5()->AEGP_DisposeStream(streamH);
   }
-  g_suites->EffectSuite5()->AEGP_DisposeEffect(effectH);
+  g_suites->EffectSuite4()->AEGP_DisposeEffect(effectH);
   return result;
 }
 
@@ -314,7 +391,7 @@ std::string readArb(AEGP_StreamRefH streamH) {
       AEGP_StreamValue2 value{};
       if (keys->AEGP_GetNewKeyframeValue(g_pluginId, streamH, i, &value)) return "E";
       std::string hex = arbBytes(value);
-      g_suites->StreamSuite6()->AEGP_DisposeStreamValue(&value);
+      g_suites->StreamSuite5()->AEGP_DisposeStreamValue(&value);
       if (hex.empty()) return "E";
       record += "," + hex;
       length += record.size();
@@ -331,9 +408,9 @@ std::string readArb(AEGP_StreamRefH streamH) {
   AEGP_StreamValue2 value;
   AEFX_CLR_STRUCT(value);
   A_Time t = {0, 1};
-  if (g_suites->StreamSuite6()->AEGP_GetNewStreamValue(g_pluginId, streamH, AEGP_LTimeMode_CompTime, &t, TRUE, &value)) return "E";
+  if (g_suites->StreamSuite5()->AEGP_GetNewStreamValue(g_pluginId, streamH, AEGP_LTimeMode_CompTime, &t, TRUE, &value)) return "E";
   std::string hex = arbBytes(value);
-  g_suites->StreamSuite6()->AEGP_DisposeStreamValue(&value);
+  g_suites->StreamSuite5()->AEGP_DisposeStreamValue(&value);
   return hex.empty() ? "E" : std::to_string(hex.size() / 2) + ":" + hex;
 }
 
@@ -351,7 +428,7 @@ std::string putArb(AEGP_StreamRefH streamH, AEGP_StreamValue2& value, const ArbD
     memcpy(p, key.bytes.data(), key.bytes.size());
     g_suites->HandleSuite1()->host_unlock_handle(h);
     if (!data.animated) {
-      if (g_suites->StreamSuite6()->AEGP_SetStreamValue(g_pluginId, streamH, &value)) return "err:set";
+      if (g_suites->StreamSuite5()->AEGP_SetStreamValue(g_pluginId, streamH, &value)) return "err:set";
       continue;
     }
     A_Time time = {key.time, key.scale};
@@ -392,26 +469,26 @@ void cmdArbGet(const std::vector<std::string>& f) {
   }
   std::string body;
   A_long numFx = 0;
-  g_suites->EffectSuite5()->AEGP_GetLayerNumEffects(layerH, &numFx);
+  g_suites->EffectSuite4()->AEGP_GetLayerNumEffects(layerH, &numFx);
   for (A_long fx = 1; fx <= numFx; fx++) {
     AEGP_EffectRefH effectH = nullptr;
-    if (g_suites->EffectSuite5()->AEGP_GetLayerEffectByIndex(g_pluginId, layerH, fx - 1, &effectH) || !effectH) continue;
+    if (g_suites->EffectSuite4()->AEGP_GetLayerEffectByIndex(g_pluginId, layerH, fx - 1, &effectH) || !effectH) continue;
     A_long numParams = 0;
-    g_suites->StreamSuite6()->AEGP_GetEffectNumParamStreams(effectH, &numParams);
+    g_suites->StreamSuite5()->AEGP_GetEffectNumParamStreams(effectH, &numParams);
     for (A_long param = 1; param < numParams; param++) {
       AEGP_StreamRefH streamH = nullptr;
-      if (g_suites->StreamSuite6()->AEGP_GetNewEffectStreamByIndex(g_pluginId, effectH, param, &streamH) || !streamH) continue;
+      if (g_suites->StreamSuite5()->AEGP_GetNewEffectStreamByIndex(g_pluginId, effectH, param, &streamH) || !streamH) continue;
       AEGP_StreamType type = AEGP_StreamType_NO_DATA;
-      g_suites->StreamSuite6()->AEGP_GetStreamType(streamH, &type);
+      g_suites->StreamSuite5()->AEGP_GetStreamType(streamH, &type);
       if (type == AEGP_StreamType_ARB) {
         char key[32];
         sprintf_s(key, "%ld:%ld:", static_cast<long>(fx), static_cast<long>(param));
         if (!body.empty()) body += ";";
         body += key + readArb(streamH);
       }
-      g_suites->StreamSuite6()->AEGP_DisposeStream(streamH);
+      g_suites->StreamSuite5()->AEGP_DisposeStream(streamH);
     }
-    g_suites->EffectSuite5()->AEGP_DisposeEffect(effectH);
+    g_suites->EffectSuite4()->AEGP_DisposeEffect(effectH);
   }
   emit("ARB\t" + req + "\tok\t" + body);
 }
@@ -435,13 +512,13 @@ void cmdArbSet(const std::vector<std::string>& f) {
   }
   std::string result = withParam(layerH, atol(f[4].c_str()), atol(f[5].c_str()), [&](AEGP_StreamRefH streamH) -> std::string {
     AEGP_StreamType type = AEGP_StreamType_NO_DATA;
-    g_suites->StreamSuite6()->AEGP_GetStreamType(streamH, &type);
+    g_suites->StreamSuite5()->AEGP_GetStreamType(streamH, &type);
     if (type != AEGP_StreamType_ARB) return std::string("err:not custom data");
     A_Boolean canVary = FALSE;
     AEGP_KeyInterpolationMask mask = 0;
     A_short dims = 0;
-    if (data.animated && (g_suites->StreamSuite6()->AEGP_CanVaryOverTime(streamH, &canVary) || !canVary ||
-        g_suites->StreamSuite6()->AEGP_GetValidInterpolations(streamH, &mask) ||
+    if (data.animated && (g_suites->StreamSuite5()->AEGP_CanVaryOverTime(streamH, &canVary) || !canVary ||
+        g_suites->StreamSuite5()->AEGP_GetValidInterpolations(streamH, &mask) ||
         g_suites->KeyframeSuite4()->AEGP_GetStreamTemporalDimensionality(streamH, &dims))) return std::string("err:cannot animate");
     for (const auto& key : data.keys) {
       if (data.animated && (!(mask & (1 << (key.in - 1))) || !(mask & (1 << (key.out - 1))) ||
@@ -454,7 +531,7 @@ void cmdArbSet(const std::vector<std::string>& f) {
     AEGP_StreamValue2 value;
     AEFX_CLR_STRUCT(value);
     A_Time t = {0, 1};
-    if (g_suites->StreamSuite6()->AEGP_GetNewStreamValue(g_pluginId, streamH, AEGP_LTimeMode_CompTime, &t, TRUE, &value)) return std::string("err:read");
+    if (g_suites->StreamSuite5()->AEGP_GetNewStreamValue(g_pluginId, streamH, AEGP_LTimeMode_CompTime, &t, TRUE, &value)) return std::string("err:read");
     PF_Handle h = reinterpret_cast<PF_Handle>(value.val.arbH);
     std::string r = "ok";
     if (!h) {
@@ -477,7 +554,7 @@ void cmdArbSet(const std::vector<std::string>& f) {
         g_suites->UtilitySuite6()->AEGP_EndUndoGroup();
       }
     }
-    g_suites->StreamSuite6()->AEGP_DisposeStreamValue(&value);
+    g_suites->StreamSuite5()->AEGP_DisposeStreamValue(&value);
     return r;
   });
   emit("ARBOK\t" + req + "\t" + result);
@@ -492,10 +569,11 @@ void runCommands() {
   for (const auto& line : cmds) {
     std::vector<std::string> f = splitTabs(line);
     try {
-      if (f[0] == "ARBGET") cmdArbGet(f);
+      if (f[0] == "ARBCYCLE") cmdNativeCycle(f);
+      else if (f[0] == "ARBGET") cmdArbGet(f);
       else if (f[0] == "ARBSET") cmdArbSet(f);
     } catch (...) {
-      emit(std::string(f[0] == "ARBSET" ? "ARBOK\t" : "ARB\t") + (f.size() > 1 ? f[1] : "") + "\terr:exception");
+      emit(std::string(f[0] == "ARBSET" ? "ARBOK\t" : (f[0] == "ARBCYCLE" ? "ARBCYCLE\t" : "ARB\t")) + (f.size() > 1 ? f[1] : "") + "\terr:exception");
     }
   }
 }

@@ -34,6 +34,18 @@ async function main() {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
     const panel = fixture.panelFixture({ processInfo: { env: { TEMP: dir } } });
+    const nativeLines = [];
+    let nativeResult;
+    const nativeReq = { ops: [{ kind: 'attr', target: { comp: 'id1|Main', layer: 'st012345abcdef' }, path: 'name', value: 'Curve\t"\u96ea\n\u2028' }] };
+    panel.set('__nativeReq', nativeReq);
+    panel.set('__nativeWrite', line => nativeLines.push(line));
+    panel.set('__nativeDone', value => { nativeResult = value; });
+    panel.run('hostVersion="17.0";state.aegp={connected:true,sock:{write:__nativeWrite}};hostCycle(__nativeReq,__nativeDone);');
+    assert.strictEqual(nativeLines.length, 1);
+    assert.strictEqual(nativeLines[0], 'ARBCYCLE\t1\t' + JSON.stringify(nativeReq) + '\n');
+    panel.run('onAegpLine(\'ARBCYCLE\\t1\\tok\\t{"r":[""],"snaps":[]}\');');
+    assert.strictEqual(nativeResult, '{"r":[""],"snaps":[]}');
+    console.log('ok: native identity cycle transport on ' + process.version);
     panel.get('serverInput').value = 'ws://127.0.0.1:' + server.address().port + '/ws';
     panel.set('__src', src);
     panel.set('__dest', dest);

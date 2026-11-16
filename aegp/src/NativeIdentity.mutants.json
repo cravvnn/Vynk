@@ -1,0 +1,6 @@
+[
+  { "name": "reuse a prior project's native bindings", "replace": [["binding' = project", "binding' = 1"]], "expect": "FreshBinding" },
+  { "name": "allow project edits between capture and script execution", "replace": [["ExternalChange == /\\ phase = \"idle\"", "ExternalChange == /\\ phase \\in {\"idle\", \"bound\"}"]], "expect": "FreshBinding" },
+  { "name": "retain native binding cache after the command", "replace": [["/\\ binding' = 0", "/\\ binding' = binding"]], "expect": "NoRetainedBindings" },
+  { "name": "lose successful receipts on refresh failure", "replace": [["receipt' = receipt", "receipt' = IF refresh THEN receipt ELSE \"none\""]], "expect": "ReceiptsSurviveRefresh" }
+]

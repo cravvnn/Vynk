@@ -77,11 +77,84 @@ $.global.vynkSync = (function () {
 
   // ---------------------------------------------------------------- identity
 
-  function randHex(len) {
-    var chars = '0123456789abcdef';
-    var s = '';
-    for (var i = 0; i < len; i++) s += chars.charAt(Math.floor(Math.random() * 16));
-    return s;
+  var nativeLayers = null;
+
+  function nativeIdOf(obj) {
+    if (nativeLayers) {
+      for (var i = 0; i < nativeLayers.length; i++) {
+        if (nativeLayers[i][0] === obj) return nativeLayers[i][1];
+      }
+      var owner = null;
+      try { owner = obj.containingComp; } catch (eOwner) {}
+      if (owner) throw new Error('layer created after native identity capture');
+    }
+    var id;
+    try { id = obj.id; } catch (e) {}
+    if (typeof id === 'number' && id > 0 && id <= 2147483647 && Math.floor(id) === id) return id;
+    throw new Error('native layer identity unavailable; needs the current Vynk plug-in');
+  }
+
+  // The companion captures this table and executes the script synchronously on
+  // AE's main thread. Positions only bind live objects within that command.
+  function bindNativeLayers(table) {
+    var bound = [];
+    var comps = 0;
+    for (var i = 1; i <= app.project.numItems; i++) {
+      var comp = app.project.item(i);
+      if (!(comp instanceof CompItem)) continue;
+      comps++;
+      var row = null;
+      for (var r = 0; r < table.length; r++) {
+        if (table[r][0] === comp.id) {
+          if (row) throw new Error('duplicate native comp identity');
+          row = table[r];
+        }
+      }
+      if (!row || row.length !== 2 || row[1].length !== comp.numLayers) throw new Error('native identity table changed');
+      var used = {};
+      for (var j = 1; j <= comp.numLayers; j++) {
+        var id = row[1][j - 1];
+        if (typeof id !== 'number' || id <= 0 || id > 2147483647 || Math.floor(id) !== id || used[id]) throw new Error('invalid native layer identity');
+        used[id] = 1;
+        bound.push([comp.layer(j), id]);
+      }
+    }
+    if (comps !== table.length) throw new Error('native comp identity table changed');
+    return bound;
+  }
+
+  function cycleNative(reqStr, table) {
+    if (nativeLayers) throw new Error('nested native identity command');
+    nativeLayers = bindNativeLayers(table);
+    try { return cycle(reqStr); }
+    finally { nativeLayers = null; }
+  }
+
+  // Remote adds can create layers after the first table was captured. Refresh
+  // their local native IDs before the panel's post-host custom-data phase.
+  function refreshNativeIds(resultStr, table) {
+    if (nativeLayers) throw new Error('nested native identity command');
+    nativeLayers = bindNativeLayers(table);
+    try {
+      var out = JSON.parse(resultStr);
+      for (var s = 0; out.snaps && s < out.snaps.length; s++) {
+        var snap = out.snaps[s];
+        var bySid = {};
+        for (var i = 0; i < nativeLayers.length; i++) {
+          var obj = nativeLayers[i][0];
+          if (obj.containingComp.id !== snap.iid) continue;
+          var sid = sidOf(obj);
+          if (bySid[sid]) throw new Error('ambiguous native layer identity');
+          bySid[sid] = nativeLayers[i][1];
+        }
+        for (var j = 0; j < snap.layers.length; j++) {
+          var entry = snap.layers[j];
+          if (!bySid[entry.sid]) throw new Error('native layer identity changed');
+          entry.lid = bySid[entry.sid];
+        }
+      }
+      return JSON.stringify(out);
+    } finally { nativeLayers = null; }
   }
 
   function readStamp(comment) {
@@ -116,12 +189,7 @@ $.global.vynkSync = (function () {
       if (stamp.charAt(0) === '=') return stamp.substring(1).replace(/\.+$/, '');
       return 'st' + stamp;
     }
-    var id;
-    try { id = obj.id; } catch (e) { id = null; }
-    if (typeof id === 'number') return 'id' + id;
-    var fresh = randHex(STAMP_LEN);
-    try { writeStamp(obj, fresh); } catch (e2) {}
-    return 'st' + fresh;
+    return 'id' + nativeIdOf(obj);
   }
 
   // The stamp that makes a newly created object answer to this sid.
@@ -663,7 +731,7 @@ $.global.vynkSync = (function () {
   function readLayer(layer, sid, force) {
     var info = layerKind(layer);
     var entry = { sid: sid, kind: info.kind, a: layerAttrs(layer), p: {}, g: {} };
-    try { if (typeof layer.id === 'number') entry.lid = layer.id; } catch (eId) {}
+    try { entry.lid = nativeIdOf(layer); } catch (eId) {}
     if (info.src) entry.src = info.src;
     if (info.box) entry.box = 1;
     walk(layer, '', 0, force, entry.p, entry.g);
@@ -710,11 +778,11 @@ $.global.vynkSync = (function () {
       var sid = sidOf(layer);
       if (seen[sid]) {
         // A duplicated layer copies its stamp. The copy is the one with the
-        // newer layer id (or, before AE 22, the one above the original).
+        // newer native layer id, including before AE 22.
         var other = seen[sid];
         var copy = layer;
         try {
-          if (typeof layer.id === 'number' && typeof other.id === 'number' && other.id > layer.id) copy = other;
+          if (nativeIdOf(other) > nativeIdOf(layer)) copy = other;
         } catch (e3) {}
         try { copy.comment = stripStamps(copy.comment); } catch (e4) {}
         if (copy !== layer) {
@@ -1287,6 +1355,21 @@ $.global.vynkSync = (function () {
       return JSON.stringify({ error: 'bad request' });
     }
     var out = { r: [], snaps: [], active: null, items: [], host: hostInfo() };
+    // Refuse legacy direct calls before any stamp or setter can mutate the
+    // shared base. The native cycle supplies fresh identities instead.
+    if (!nativeLayers && parseFloat(app.version) < 22) {
+      try {
+        for (var ci = 1; ci <= app.project.numItems; ci++) {
+          var identityComp = app.project.item(ci);
+          if (!(identityComp instanceof CompItem)) continue;
+          for (var li = 1; li <= identityComp.numLayers; li++) nativeIdOf(identityComp.layer(li));
+        }
+      } catch (eIdentity) {
+        out.error = eIdentity.toString();
+        out.identityError = 1;
+        return JSON.stringify(out);
+      }
+    }
     itemCache = null;
     // The project revision counts every edit and undo (not selection or time
     // changes). If it has not moved and there is nothing to apply, nothing
@@ -1400,6 +1483,6 @@ $.global.vynkSync = (function () {
     } catch (e) { return 'ERR ' + e.toString(); }
   }
 
-  return { cycle: cycle, openBase: openBase, version: 2 };
+  return { cycle: cycle, cycleNative: cycleNative, refreshNativeIds: refreshNativeIds, openBase: openBase, version: 2 };
 })();
 'vynkSync ' + $.global.vynkSync.version;

@@ -1,0 +1,274 @@
+{
+  "description": "Source-level contract, not verified host compatibility. Parameter types checked against official Adobe Windows SDKs 25.2, 25.6, 26.5 and 27.0; native Release builds and CTest pass. Test real AE2020 before release.",
+  "reference": "https://ae-plugins.docsforadobe.dev/aegps/aegp-suites/",
+  "suites": {
+    "ItemSuite9": {
+      "AEGP_GetItemName": [
+        "AEGP_PluginID",
+        "AEGP_ItemH",
+        "AEGP_MemHandle*"
+      ],
+      "AEGP_GetActiveItem": [
+        "AEGP_ItemH*"
+      ],
+      "AEGP_GetItemType": [
+        "AEGP_ItemH",
+        "AEGP_ItemType*"
+      ],
+      "AEGP_GetItemID": [
+        "AEGP_ItemH",
+        "A_long*"
+      ],
+      "AEGP_GetFirstProjItem": [
+        "AEGP_ProjectH",
+        "AEGP_ItemH*"
+      ],
+      "AEGP_GetNextProjItem": [
+        "AEGP_ProjectH",
+        "AEGP_ItemH",
+        "AEGP_ItemH*"
+      ]
+    },
+    "MemorySuite1": {
+      "AEGP_LockMemHandle": [
+        "AEGP_MemHandle",
+        "void**"
+      ],
+      "AEGP_UnlockMemHandle": [
+        "AEGP_MemHandle"
+      ],
+      "AEGP_FreeMemHandle": [
+        "AEGP_MemHandle"
+      ]
+    },
+    "ProjSuite6": {
+      "AEGP_GetProjectByIndex": [
+        "A_long",
+        "AEGP_ProjectH*"
+      ],
+      "AEGP_ProjectIsDirty": [
+        "AEGP_ProjectH",
+        "A_Boolean*"
+      ]
+    },
+    "CompSuite10": {
+      "AEGP_GetCompFromItem": [
+        "AEGP_ItemH",
+        "AEGP_CompH*"
+      ],
+      "AEGP_GetNewCollectionFromCompSelection": [
+        "AEGP_PluginID",
+        "AEGP_CompH",
+        "AEGP_Collection2H*"
+      ]
+    },
+    "LayerSuite8": {
+      "AEGP_GetCompNumLayers": [
+        "AEGP_CompH",
+        "A_long*"
+      ],
+      "AEGP_GetLayerID": [
+        "AEGP_LayerH",
+        "AEGP_LayerIDVal*"
+      ],
+      "AEGP_GetLayerFromLayerID": [
+        "AEGP_CompH",
+        "AEGP_LayerIDVal",
+        "AEGP_LayerH*"
+      ],
+      "AEGP_GetCompLayerByIndex": [
+        "AEGP_CompH",
+        "A_long",
+        "AEGP_LayerH*"
+      ]
+    },
+    "CollectionSuite2": {
+      "AEGP_GetCollectionNumItems": [
+        "AEGP_Collection2H",
+        "A_u_long*"
+      ],
+      "AEGP_GetCollectionItemByIndex": [
+        "AEGP_Collection2H",
+        "A_u_long",
+        "AEGP_CollectionItemV2*"
+      ],
+      "AEGP_DisposeCollection": [
+        "AEGP_Collection2H"
+      ]
+    },
+    "UtilitySuite6": {
+      "AEGP_IsScriptingAvailable": [
+        "A_Boolean*"
+      ],
+      "AEGP_ExecuteScript": [
+        "AEGP_PluginID",
+        "constA_char*",
+        "constA_Boolean",
+        "AEGP_MemHandle*",
+        "AEGP_MemHandle*"
+      ],
+      "AEGP_StartUndoGroup": [
+        "constA_char*"
+      ],
+      "AEGP_EndUndoGroup": [
+        "void"
+      ],
+      "AEGP_CauseIdleRoutinesToBeCalled": [
+        "void"
+      ],
+      "AEGP_GetMainHWND": [
+        "void*"
+      ]
+    },
+    "EffectSuite4": {
+      "AEGP_GetLayerEffectByIndex": [
+        "AEGP_PluginID",
+        "AEGP_LayerH",
+        "AEGP_EffectIndex",
+        "AEGP_EffectRefH*"
+      ],
+      "AEGP_DisposeEffect": [
+        "AEGP_EffectRefH"
+      ],
+      "AEGP_GetLayerNumEffects": [
+        "AEGP_LayerH",
+        "A_long*"
+      ]
+    },
+    "StreamSuite5": {
+      "AEGP_GetNewEffectStreamByIndex": [
+        "AEGP_PluginID",
+        "AEGP_EffectRefH",
+        "PF_ParamIndex",
+        "AEGP_StreamRefH*"
+      ],
+      "AEGP_DisposeStream": [
+        "AEGP_StreamRefH"
+      ],
+      "AEGP_DisposeStreamValue": [
+        "AEGP_StreamValue2*"
+      ],
+      "AEGP_GetNewStreamValue": [
+        "AEGP_PluginID",
+        "AEGP_StreamRefH",
+        "AEGP_LTimeMode",
+        "constA_Time*",
+        "A_Boolean",
+        "AEGP_StreamValue2*"
+      ],
+      "AEGP_SetStreamValue": [
+        "AEGP_PluginID",
+        "AEGP_StreamRefH",
+        "AEGP_StreamValue2*"
+      ],
+      "AEGP_GetEffectNumParamStreams": [
+        "AEGP_EffectRefH",
+        "A_long*"
+      ],
+      "AEGP_GetStreamType": [
+        "AEGP_StreamRefH",
+        "AEGP_StreamType*"
+      ],
+      "AEGP_CanVaryOverTime": [
+        "AEGP_StreamRefH",
+        "A_Boolean*"
+      ],
+      "AEGP_GetValidInterpolations": [
+        "AEGP_StreamRefH",
+        "AEGP_KeyInterpolationMask*"
+      ]
+    },
+    "KeyframeSuite4": {
+      "AEGP_GetStreamNumKFs": [
+        "AEGP_StreamRefH",
+        "A_long*"
+      ],
+      "AEGP_GetStreamTemporalDimensionality": [
+        "AEGP_StreamRefH",
+        "A_short*"
+      ],
+      "AEGP_GetKeyframeTime": [
+        "AEGP_StreamRefH",
+        "AEGP_KeyframeIndex",
+        "AEGP_LTimeMode",
+        "A_Time*"
+      ],
+      "AEGP_GetKeyframeInterpolation": [
+        "AEGP_StreamRefH",
+        "AEGP_KeyframeIndex",
+        "AEGP_KeyframeInterpolationType*",
+        "AEGP_KeyframeInterpolationType*"
+      ],
+      "AEGP_GetKeyframeFlags": [
+        "AEGP_StreamRefH",
+        "AEGP_KeyframeIndex",
+        "AEGP_KeyframeFlags*"
+      ],
+      "AEGP_GetKeyframeTemporalEase": [
+        "AEGP_StreamRefH",
+        "AEGP_KeyframeIndex",
+        "A_long",
+        "AEGP_KeyframeEase*",
+        "AEGP_KeyframeEase*"
+      ],
+      "AEGP_GetNewKeyframeValue": [
+        "AEGP_PluginID",
+        "AEGP_StreamRefH",
+        "AEGP_KeyframeIndex",
+        "AEGP_StreamValue2*"
+      ],
+      "AEGP_DeleteKeyframe": [
+        "AEGP_StreamRefH",
+        "AEGP_KeyframeIndex"
+      ],
+      "AEGP_InsertKeyframe": [
+        "AEGP_StreamRefH",
+        "AEGP_LTimeMode",
+        "constA_Time*",
+        "AEGP_KeyframeIndex*"
+      ],
+      "AEGP_SetKeyframeValue": [
+        "AEGP_StreamRefH",
+        "AEGP_KeyframeIndex",
+        "constAEGP_StreamValue2*"
+      ],
+      "AEGP_SetKeyframeInterpolation": [
+        "AEGP_StreamRefH",
+        "AEGP_KeyframeIndex",
+        "AEGP_KeyframeInterpolationType",
+        "AEGP_KeyframeInterpolationType"
+      ],
+      "AEGP_SetKeyframeTemporalEase": [
+        "AEGP_StreamRefH",
+        "AEGP_KeyframeIndex",
+        "A_long",
+        "constAEGP_KeyframeEase*",
+        "constAEGP_KeyframeEase*"
+      ],
+      "AEGP_SetKeyframeFlag": [
+        "AEGP_StreamRefH",
+        "AEGP_KeyframeIndex",
+        "AEGP_KeyframeFlags",
+        "A_Boolean"
+      ]
+    },
+    "RegisterSuite5": {
+      "AEGP_RegisterDeathHook": [
+        "AEGP_PluginID",
+        "AEGP_DeathHook",
+        "AEGP_DeathRefcon"
+      ],
+      "AEGP_RegisterIdleHook": [
+        "AEGP_PluginID",
+        "AEGP_IdleHook",
+        "AEGP_IdleRefcon"
+      ]
+    },
+    "RenderSuite5": {
+      "AEGP_GetCurrentTimestamp": [
+        "AEGP_TimeStamp*"
+      ]
+    },
+    "HandleSuite1": {}
+  }
+}
