@@ -11,13 +11,14 @@
 //
 // Refuses to start (without --attach) while any After Effects is running.
 
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { scenarios } from './scenarios.mjs';
+import { hostProcess, ownedHostProcess, listAEProcesses, validateHosts } from './host-process.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..', '..');
@@ -44,33 +45,26 @@ const fwd = (p) => p.replace(/\\/g, '/');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const say = (s) => console.log(`[pair ${new Date().toTimeString().slice(0, 8)}] ${s}`);
 
-const PROC = { A: path.basename(INST.A.exe, '.exe'), B: path.basename(INST.B.exe, '.exe') };
-
 // '' = not running, 'starting' = no main window yet, otherwise the window title.
 function windowOf(who) {
-  try {
-    const out = execSync(
-      `powershell -NoProfile -Command "$p = Get-Process -Name '${PROC[who]}' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($p) { if ($p.MainWindowTitle) { $p.MainWindowTitle } else { 'starting' } }"`,
-      { encoding: 'utf8' }
-    ).trim();
-    return out;
-  } catch {
-    return '';
-  }
+  const process = hostProcess(INST[who].exe);
+  return process ? process.windowTitle || 'starting' : '';
 }
 const isRunning = (who) => windowOf(who) !== '';
 
-function processIdOf(who) {
-  try {
-    return Number(execSync(
-      `powershell -NoProfile -Command "(Get-Process -Name '${PROC[who]}' -ErrorAction SilentlyContinue | Select-Object -First 1).Id"`,
-      { encoding: 'utf8' }
-    ).trim()) || null;
-  } catch { return null; }
+function processIdOf(who, executable = INST[who].exe) {
+  const process = hostProcess(executable);
+  return process ? process.pid : null;
+}
+
+function ownedProcess(who) {
+  const saved = JSON.parse(fs.readFileSync(STATE, 'utf8'));
+  return ownedHostProcess(listAEProcesses(), saved.executables && saved.executables[who] || INST[who].exe, saved.pids && saved.pids[who]);
 }
 
 let cmdSeq = Date.now() % 100000;
 async function cmd(who, payload, timeout = 240000) {
+  ownedProcess(who);
   const id = ++cmdSeq;
   const file = path.join(CMD, who + '.cmd');
   const res = path.join(CMD, who + '.res');
@@ -96,7 +90,8 @@ const js = (who, code, timeout) => cmd(who, { js: code }, timeout);
 // Like a person, a scenario selects the layer it edits (select: false opts out,
 // which is how a script or plug-in would touch a layer).
 function focusWindow(who) {
-  const result = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(here, 'focus.ps1')}" -ProcessName "${PROC[who]}"`, { encoding: 'utf8' }).trim();
+  const host = ownedProcess(who);
+  const result = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(here, 'focus.ps1'), '-ProcessId', String(host.pid), '-Executable', host.executable], { encoding: 'utf8', windowsHide: true }).trim();
   if (result !== 'focused') throw new Error(who + ': could not focus the AE window: ' + result);
   return result;
 }
@@ -201,7 +196,8 @@ async function runScript(who, script) {
     await jsx(who, '(function(){' + body + String.fromCharCode(10) + "return 'done';})()", 45000);
     return;
   } catch {}
-  spawn(INST[who].exe, ['-r', script], { detached: true, stdio: 'ignore' }).unref();
+  const host = ownedProcess(who);
+  spawn(host.executable, ['-r', script], { detached: true, stdio: 'ignore' }).unref();
 }
 
 function startRelay() {
@@ -264,7 +260,7 @@ async function quitInstances() {
   const ours = saved.launched || [];
   const pids = saved.pids || {};
   for (const who of ours) {
-    const pid = processIdOf(who);
+    const pid = processIdOf(who, saved.executables && saved.executables[who] || INST[who].exe);
     if (!pid) continue;
     if (!pids[who] || pids[who] !== pid) {
       say(who + ': shutdown skipped - process ownership does not match');
@@ -280,7 +276,7 @@ async function quitInstances() {
     } catch {}
   }
   const remaining = () => ours.filter((who) => {
-    const pid = processIdOf(who);
+    const pid = processIdOf(who, saved.executables && saved.executables[who] || INST[who].exe);
     return pid && (!pids[who] || pids[who] === pid);
   });
   if (!(await waitFor(() => remaining().length === 0, 25000))) {
@@ -301,6 +297,7 @@ async function main() {
     if (stopped) say('stopped');
     return stopped ? 0 : 3;
   }
+  validateHosts(INST);
 
   const only = opt('--only');
   const list = only ? scenarios.filter((s) => s.name.includes(only)) : scenarios;
@@ -316,7 +313,7 @@ async function main() {
   const logFile = path.join(WORK, 'session.log');
   try { fs.unlinkSync(logFile); } catch {}
 
-  if (!attach && (isRunning('A') || isRunning('B'))) {
+  if (!attach && listAEProcesses().length > 0) {
     say('After Effects is already running - close it first (or use --attach for instances left by --keep).');
     return 4;
   }
@@ -328,6 +325,10 @@ async function main() {
     let ownership = {};
     try { ownership = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
     for (const who of ['A', 'B']) {
+      if (ownership.executables && ownership.executables[who] && path.win32.normalize(ownership.executables[who]).toLowerCase() !== path.win32.normalize(INST[who].exe).toLowerCase()) {
+        say('--attach refused: ' + who + ' executable does not match the saved host');
+        return 4;
+      }
       if (!ownership.pids || ownership.pids[who] !== processIdOf(who)) {
         say('--attach refused: ' + who + ' is not a recorded test process');
         return 4;
@@ -355,7 +356,7 @@ async function main() {
         fs.rmSync(path.join(WORK, d), { recursive: true, force: true });
         fs.mkdirSync(path.join(WORK, d), { recursive: true });
       }
-      const ownership = { launched: [], pids: {} };
+      const ownership = { launched: [], pids: {}, executables: { A: INST.A.exe, B: INST.B.exe } };
       for (const who of ['A', 'B']) {
         say('launching ' + who + ': ' + INST[who].exe);
         ownership.pids[who] = launch(who);
@@ -369,7 +370,8 @@ async function main() {
           if (w && w !== 'starting') return true;
           if (++ticks % 20 === 0) {
             try {
-              const out = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(here, 'continue-dialog.ps1')}" -ProcessName "${PROC[who]}"`, { encoding: 'utf8' });
+              const host = ownedProcess(who);
+              const out = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(here, 'continue-dialog.ps1'), '-ProcessId', String(host.pid), '-Executable', host.executable], { encoding: 'utf8', windowsHide: true });
               if (out.includes('dismissed')) say(who + ': dismissed the crash-repair dialog');
             } catch {}
           }

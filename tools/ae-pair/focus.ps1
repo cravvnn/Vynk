@@ -1,7 +1,7 @@
 # Brings one After Effects window to the foreground, as a user working in it
 # would. Used by tools/ae-pair/run.mjs for things After Effects only does while
 # it is the active app (the Layer Styles menu).
-param([string]$ProcessName)
+param([string]$ProcessName, [int]$ProcessId = 0, [string]$Executable)
 
 Add-Type @"
 using System; using System.Text; using System.Runtime.InteropServices;
@@ -40,8 +40,18 @@ public class VynkFocus {
 }
 "@
 
-$p = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue | Select-Object -First 1
+$p = $null
+if ($ProcessId -gt 0) { $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue }
+elseif ($ProcessName) {
+  $processMatches = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+  if ($processMatches.Count -ne 1) { Write-Output 'no unique process'; exit 1 }
+  $p = $processMatches[0]
+}
 if (-not $p) { Write-Output "no process"; exit 1 }
+if ($Executable) {
+  try { if (-not $p.Path -or [IO.Path]::GetFullPath($p.Path) -ine [IO.Path]::GetFullPath($Executable)) { Write-Output 'wrong host executable'; exit 1 } }
+  catch { Write-Output 'cannot verify host executable'; exit 1 }
+}
 $aeWindow = [VynkFocus]::Find([uint32]$p.Id)
 if ($aeWindow -eq [IntPtr]::Zero) { Write-Output "no AE window"; exit 1 }
 if ([VynkFocus]::IsIconic($aeWindow)) { [void][VynkFocus]::ShowWindow($aeWindow, 9) }

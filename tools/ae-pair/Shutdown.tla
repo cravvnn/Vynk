@@ -1,9 +1,11 @@
 ---- MODULE Shutdown ----
 \* run.mjs: quitInstances, called by --stop and main's finally block.
-\* Two saved launch records, PID ownership checks, project checks inside one
+\* Two saved launch records, executable/PID ownership checks, project checks inside one
 \* evalScript, graceful exit/timeout, then cleanup. AE can refuse to exit.
 \* Read/check/close inside evalScript is serialized on AE's main thread.
-\* Left out: startup, relay and product sync; see SPECS.md for coverage.
+\* HostProcesses models executable attribution. Startup, relay, PID reuse after
+\* inspection and product sync are outside this model; see SPECS.md.
+\* owned denotes the fresh executable/PID match, not merely a saved PID value.
 EXTENDS FiniteSets
 
 CONSTANTS Hosts, Legacy

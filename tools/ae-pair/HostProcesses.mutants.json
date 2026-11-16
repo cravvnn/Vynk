@@ -1,0 +1,5 @@
+[
+  { "name": "choose by shared process name instead of executable", "replace": [["Path(p) = want", "TRUE"]], "expect": "ResolvedHost" },
+  { "name": "guess between duplicate instances", "replace": [[" \\/ Cardinality(Matches) > 1", ""]], "expect": "UniqueBinding" },
+  { "name": "ignore a process with unreadable executable metadata", "replace": [["(\"unknown\" \\in live)", "FALSE"]], "expect": "UnreadableRefused" }
+]
