@@ -2,8 +2,10 @@
 
 AE2020 (17.0) remains the minimum target. Native Release builds and CTest pass
 against official Windows SDKs 25.2, 25.6, 26.5 and 27.0 with MSVC 19.44, Windows
-SDK 10.0.26100 and CMake 4.5. Four forced native-identity cases pass on modified
-development installations reporting AE 25.6 and 26.3. Official Adobe builds and
+SDK 10.0.26100 and CMake 4.5. Twenty-four focused Curves/Pattern/identity cases pass
+on modified development installations reporting AE 25.6 and 26.3. Animated Curves
+used forced native identity. A further nine-case run enables native identity
+before all five Pattern cases and checks the identity lifecycle. Official Adobe builds and
 AE2020 remain unverified; compilation, mock-host and model checks do not establish
 that compatibility.
 
@@ -63,15 +65,21 @@ identity before setters or stamps. Lite snapshots never restore IDs from shadows
 
 ## Pending host gates
 
-The four focused identity cases pass on the modified development hosts, covering
-unchanged shared-base comments, independent playheads, add, reorder and delete.
+The focused runs pass with matching dumps, empty queues/outboxes and zero apply
+failures. They cover unchanged shared-base comments, independent playheads, add,
+reorder, delete, animated custom data including a locked peer, and existing-base
+Pattern controls/keys with matching rendered pixels.
 Those runs exposed an allocated empty ExecuteScript error handle on success;
 the companion now checks its contents and frees both returned handles. Script
 failures include a bounded diagnostic. This is development evidence, not an
 official-host or AE2020 compatibility result.
 
-Run the Curves scenarios through forced native identity, the full pair suite,
-official Adobe builds and a real AE2020 host before release or merge.
+The full 113-case attempt completed 82 cases (80 passes, two failures), then
+stopped on an asynchronous PNG export receipt race. The receipt race is fixed
+and both focused rendered-pixel checks pass. Newer-only text and camera defaults
+in AE26.3 remain different from AE25.6. There is no complete full-suite pass.
+Run the complete pair suite, official Adobe builds and a real AE2020 host before
+release or merge.
 `state.nativeIdentity=true` forces the legacy route for the harness; native cycles
 also refuse Layer.id fallback for layers created after capture, even on modern
 hosts. Full-suite order enables this route for the animated custom-data cases.
@@ -82,4 +90,4 @@ custom-data write/readback, shared-base IDs, duplicate stamps, local locks and
 independent playheads. Focused identity checks cover only their named surfaces.
 
 New Pattern artwork transfer remains unsupported. Only controls and keys on
-existing shared-base Pattern artwork are covered by the previous focused evidence.
+existing shared-base Pattern artwork are covered by the focused evidence.
