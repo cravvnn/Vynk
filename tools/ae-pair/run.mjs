@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { scenarios } from './scenarios.mjs';
 import { hostProcess, ownedHostProcess, listAEProcesses, validateHosts } from './host-process.mjs';
+import { runHostScript, reopenProjectScript as reopen } from './run-script.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..', '..');
@@ -166,20 +167,6 @@ function setupA(projPath) {
   ];
 }
 
-function reopen(projPath) {
-  return [
-    'app.beginSuppressDialogs();',
-    'try {',
-    '  if (app.project) app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);',
-    `  app.open(new File(${JSON.stringify(fwd(projPath))}));`,
-    '  for (var i = 1; i <= app.project.numItems; i++) {',
-    "    if (app.project.item(i) instanceof CompItem && app.project.item(i).name === 'Main') app.project.item(i).openInViewer();",
-    '  }',
-    '} catch (e) {}',
-    'app.endSuppressDialogs(false);'
-  ];
-}
-
 // AE Beta quits after the script when cold-started with -r, so instances are
 // always started bare and scripts are sent to the running instance.
 function launch(who) {
@@ -189,15 +176,18 @@ function launch(who) {
 }
 
 // AE refuses a -r script while a panel script is running, so prefer the
-// panel's own (serialized) channel and fall back to -r when no panel answers.
+// panel's own (serialized) channel. Only a read-only readiness probe may be
+// left queued when falling back to -r; never retry a posted host mutation.
 async function runScript(who, script) {
   const body = fs.readFileSync(script, 'utf8');
-  try {
-    await jsx(who, '(function(){' + body + String.fromCharCode(10) + "return 'done';})()", 45000);
-    return;
-  } catch {}
-  const host = ownedProcess(who);
-  spawn(host.executable, ['-r', script], { detached: true, stdio: 'ignore' }).unref();
+  await runHostScript({
+    probe: () => js(who, "'ready'", 3000),
+    execute: code => jsx(who, code, 45000),
+    launch: () => {
+      const host = ownedProcess(who);
+      spawn(host.executable, ['-r', script], { detached: true, stdio: 'ignore' }).unref();
+    }
+  }, body);
 }
 
 function startRelay() {
@@ -260,7 +250,12 @@ async function quitInstances() {
   const ours = saved.launched || [];
   const pids = saved.pids || {};
   for (const who of ours) {
-    const pid = processIdOf(who, saved.executables && saved.executables[who] || INST[who].exe);
+    const executable = saved.executables && saved.executables[who] || INST[who].exe;
+    let pid;
+    const inspected = await waitFor(() => {
+      try { pid = processIdOf(who, executable); return true; } catch { return false; }
+    }, 5000);
+    if (!inspected) { say(who + ': shutdown skipped - cannot verify process metadata'); continue; }
     if (!pid) continue;
     if (!pids[who] || pids[who] !== pid) {
       say(who + ': shutdown skipped - process ownership does not match');
@@ -273,11 +268,16 @@ async function quitInstances() {
         "if(!p.file||p.file.fsName.replace(/\\\\/g,'/').toLowerCase()!==" + JSON.stringify(expected) + ")return 'refused: not the disposable test project';}" +
         "if(p)p.close(CloseOptions.DO_NOT_SAVE_CHANGES);app.quit();return 'bye';})()", 8000);
       if (result !== 'bye') say(who + ': shutdown ' + result);
+      else await waitFor(() => {
+        try { return !processIdOf(who, executable); } catch { return false; }
+      }, 5000);
     } catch {}
   }
   const remaining = () => ours.filter((who) => {
-    const pid = processIdOf(who, saved.executables && saved.executables[who] || INST[who].exe);
-    return pid && (!pids[who] || pids[who] === pid);
+    try {
+      const pid = processIdOf(who, saved.executables && saved.executables[who] || INST[who].exe);
+      return pid && (!pids[who] || pids[who] === pid);
+    } catch { return true; }
   });
   if (!(await waitFor(() => remaining().length === 0, 25000))) {
     say('shutdown incomplete: ' + remaining().join(', ') + ' left running; test ownership records kept');

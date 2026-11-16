@@ -1,0 +1,4 @@
+[
+  { "name": "leave the mutation queued while opening a late panel", "replace": [["queuedMutation' = FALSE", "queuedMutation' = TRUE"]], "expect": "NoQueuedFallbackMutation" },
+  { "name": "retry a timed-out panel mutation through the command line", "replace": [["phase = \"uncertain\" /\\ phase' = \"done\"", "phase = \"uncertain\" /\\ phase' = \"fallback\""]], "expect": "AtMostOneMutation" }
+]

@@ -3,6 +3,30 @@
 #include <string>
 
 namespace NativeScript {
+template <typename Memory, typename Handle>
+inline bool readResult(Memory* memory, Handle resultH, Handle errorH, int sdkError,
+                       std::string& result, std::string& error) {
+  result.clear();
+  error.clear();
+  bool ok = !sdkError && resultH;
+  auto readText = [&](Handle handle, std::string& out) {
+    if (!handle) return;
+    char* text = nullptr;
+    if (!memory->AEGP_LockMemHandle(handle, reinterpret_cast<void**>(&text))) {
+      if (text) out = text;
+      else ok = false;
+      memory->AEGP_UnlockMemHandle(handle);
+    } else ok = false;
+    memory->AEGP_FreeMemHandle(handle);
+  };
+  readText(resultH, result);
+  readText(errorH, error);
+  if (error.empty() && sdkError) error = "SDK error " + std::to_string(sdkError);
+  if (error.empty() && !ok) error = "unreadable script result";
+  if (error.empty() && result.empty()) error = "empty script result";
+  return ok && error.empty();
+}
+
 inline std::string quote(const std::string& text) {
   const char hex[] = "0123456789abcdef";
   std::string out = "\"";

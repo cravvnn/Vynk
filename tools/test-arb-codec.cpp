@@ -7,8 +7,43 @@ void check(bool ok, const char* message) {
   if (!ok) throw std::runtime_error(message);
 }
 
+struct ScriptHandle {
+  const char* text;
+  int lockError = 0, locks = 0, unlocks = 0, frees = 0;
+};
+struct ScriptMemory {
+  int AEGP_LockMemHandle(ScriptHandle* handle, void** text) {
+    handle->locks++;
+    *text = const_cast<char*>(handle->text);
+    return handle->lockError;
+  }
+  int AEGP_UnlockMemHandle(ScriptHandle* handle) { handle->unlocks++; return 0; }
+  int AEGP_FreeMemHandle(ScriptHandle* handle) { handle->frees++; return 0; }
+};
+
+void scriptResults() {
+  ScriptMemory memory;
+  std::string result, error;
+  ScriptHandle good{"{\"r\":[\"\"]}"}, empty{""};
+  check(NativeScript::readResult(&memory, &good, &empty, 0, result, error), "SDK success may allocate an empty error handle");
+  check(result == good.text && error.empty(), "script result bytes preserved");
+  check(good.locks == 1 && good.unlocks == 1 && good.frees == 1 && empty.locks == 1 && empty.unlocks == 1 && empty.frees == 1, "both SDK handles released once");
+  ScriptHandle failed{"ReferenceError: vynkSync is undefined"};
+  check(!NativeScript::readResult(&memory, &good, &failed, 0, result, error) && error == failed.text, "nonempty script errors reject success");
+  ScriptHandle unreadable{"ignored", 1};
+  check(!NativeScript::readResult(&memory, &unreadable, static_cast<ScriptHandle*>(nullptr), 0, result, error), "memory lock failure rejects script result");
+  check(unreadable.frees == 1 && unreadable.unlocks == 0, "failed lock still frees handle without unlocking");
+  ScriptHandle absent{nullptr};
+  check(!NativeScript::readResult(&memory, &absent, static_cast<ScriptHandle*>(nullptr), 0, result, error), "null SDK text rejects success");
+  check(absent.frees == 1 && absent.unlocks == 1, "successful null lock is released");
+  check(!NativeScript::readResult(&memory, static_cast<ScriptHandle*>(nullptr), &failed, 5, result, error) && error == failed.text, "SDK failure keeps the returned error");
+  check(!NativeScript::readResult(&memory, &good, static_cast<ScriptHandle*>(nullptr), 5, result, error) && error == "SDK error 5", "SDK error code rejects a populated result");
+  check(!NativeScript::readResult(&memory, &empty, static_cast<ScriptHandle*>(nullptr), 0, result, error) && error == "empty script result", "empty results cannot be accepted as receipts");
+}
+
 int main() {
   try {
+    scriptResults();
     check(NativeScript::quote("\"\\\n\t\r") == "\"\\\"\\\\\\u000a\\u0009\\u000d\"", "native script quoting");
     check(NativeScript::quote(std::string("a\0b", 3)) == "\"a\\u0000b\"", "native script embedded NUL");
     check(NativeScript::quote("\xe2\x80\xa8\xe2\x80\xa9\xc3\xa9") == "\"\\u2028\\u2029\xc3\xa9\"", "ES3 line separators and UTF-8");

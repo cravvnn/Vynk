@@ -266,23 +266,15 @@ bool nativeIdentityTable(std::string& table) {
   return true;
 }
 
-bool executeScript(const std::string& script, std::string& result) {
+bool executeScript(const std::string& script, std::string& result, std::string& error) {
   A_Boolean available = FALSE;
-  if (g_suites->UtilitySuite6()->AEGP_IsScriptingAvailable(&available) || !available) return false;
+  if (g_suites->UtilitySuite6()->AEGP_IsScriptingAvailable(&available) || !available) {
+    error = "scripting unavailable";
+    return false;
+  }
   AEGP_MemHandle resultH = nullptr, errorH = nullptr;
   A_Err err = g_suites->UtilitySuite6()->AEGP_ExecuteScript(g_pluginId, script.c_str(), FALSE, &resultH, &errorH);
-  bool ok = !err && resultH && !errorH;
-  if (resultH) {
-    char* text = nullptr;
-    if (!g_suites->MemorySuite1()->AEGP_LockMemHandle(resultH, reinterpret_cast<void**>(&text))) {
-      if (ok && text) result = text;
-      else ok = false;
-      g_suites->MemorySuite1()->AEGP_UnlockMemHandle(resultH);
-    } else ok = false;
-    g_suites->MemorySuite1()->AEGP_FreeMemHandle(resultH);
-  }
-  if (errorH) g_suites->MemorySuite1()->AEGP_FreeMemHandle(errorH);
-  return ok && !result.empty();
+  return NativeScript::readResult(g_suites->MemorySuite1(), resultH, errorH, err, result, error);
 }
 
 // The ID tables live only on this main-thread command's stack. No binding is
@@ -290,14 +282,18 @@ bool executeScript(const std::string& script, std::string& result) {
 void cmdNativeCycle(const std::vector<std::string>& f) {
   const std::string prefix = "ARBCYCLE\t" + (f.size() > 1 ? f[1] : "") + "\t";
   if (f.size() != 3) { emit(prefix + "err:args"); return; }
-  std::string table, result;
-  if (!nativeIdentityTable(table) ||
-      !executeScript("vynkSync.cycleNative(" + NativeScript::quote(f[2]) + "," + table + ")", result)) {
-    emit(prefix + "err:native identity script");
+  std::string table, result, error;
+  if (!nativeIdentityTable(table)) {
+    emit(prefix + "err:native identity capture");
+    return;
+  }
+  if (!executeScript("vynkSync.cycleNative(" + NativeScript::quote(f[2]) + "," + table + ")", result, error)) {
+    emit(prefix + "err:native identity script: " + sanitize(error).substr(0, 240));
     return;
   }
   std::string refreshed;
-  if (nativeIdentityTable(table) && executeScript("vynkSync.refreshNativeIds(" + NativeScript::quote(result) + "," + table + ")", refreshed)) {
+  error.clear();
+  if (nativeIdentityTable(table) && executeScript("vynkSync.refreshNativeIds(" + NativeScript::quote(result) + "," + table + ")", refreshed, error)) {
     result = std::move(refreshed);
   } else {
     // The host already applied its successful prefix. Preserve its receipts;

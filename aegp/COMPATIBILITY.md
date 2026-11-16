@@ -2,8 +2,10 @@
 
 AE2020 (17.0) remains the minimum target. Native Release builds and CTest pass
 against official Windows SDKs 25.2, 25.6, 26.5 and 27.0 with MSVC 19.44, Windows
-SDK 10.0.26100 and CMake 4.5. This slice has not run in After Effects. Compilation,
-mock-host and model checks do not establish host compatibility.
+SDK 10.0.26100 and CMake 4.5. Four forced native-identity cases pass on modified
+development installations reporting AE 25.6 and 26.3. Official Adobe builds and
+AE2020 remain unverified; compilation, mock-host and model checks do not establish
+that compatibility.
 
 The companion now requests these older suites for the members it uses:
 
@@ -27,12 +29,13 @@ or redistributed.
 `node tools/check-aegp-api.mjs` audits the source's suite acquisitions and used
 members. Supplying `AE_GeneralPlug.h` and `AE_GeneralPlugOld.h` paths also compares
 all 54 contracted parameter lists with those headers. This is a declaration
-audit, not a compiler. The existing SDK-free C++ test covers script quoting and
-passes both standalone and through the native project's CTest target.
+audit, not a compiler. The SDK-free C++ test covers script quoting, result/error
+handle decoding and ownership, including a successful result with an allocated
+empty error handle. It passes through each native project's CTest target.
 
 SDK 25.2 emits two C4103 packing warnings from Adobe's utility/header includes.
 The reference artifact uses SDK 25.6, which builds without warnings. Runtime ABI
-and suite acquisition still require real AE tests.
+and suite acquisition still require verification in official supported hosts.
 
 ## Identity before Layer.id
 
@@ -60,9 +63,15 @@ identity before setters or stamps. Lite snapshots never restore IDs from shadows
 
 ## Pending host gates
 
-Run forced native identity on both modern AE hosts, including the Curves
-scenarios and create/reorder/delete cases, then the full pair suite and a real
-AE2020 run. Compilation and CTest have passed; these host gates remain pending.
+The four focused identity cases pass on the modified development hosts, covering
+unchanged shared-base comments, independent playheads, add, reorder and delete.
+Those runs exposed an allocated empty ExecuteScript error handle on success;
+the companion now checks its contents and frees both returned handles. Script
+failures include a bounded diagnostic. This is development evidence, not an
+official-host or AE2020 compatibility result.
+
+Run the Curves scenarios through forced native identity, the full pair suite,
+official Adobe builds and a real AE2020 host before release or merge.
 `state.nativeIdentity=true` forces the legacy route for the harness; native cycles
 also refuse Layer.id fallback for layers created after capture, even on modern
 hosts. Full-suite order enables this route for the animated custom-data cases.
@@ -70,7 +79,7 @@ hosts. Full-suite order enables this route for the animated custom-data cases.
 Verify ExecuteScript sees the loaded JSX engine, returned UTF-8/memory-handle
 lifetime, live layer-object equality, fresh bindings after undo/project switches,
 custom-data write/readback, shared-base IDs, duplicate stamps, local locks and
-independent playheads. The new scenarios are prepared, not run here.
+independent playheads. Focused identity checks cover only their named surfaces.
 
 New Pattern artwork transfer remains unsupported. Only controls and keys on
 existing shared-base Pattern artwork are covered by the previous focused evidence.
