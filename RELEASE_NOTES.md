@@ -4,9 +4,7 @@ User-facing notes for GitHub releases. `tools/publish.mjs` pulls the section for
 current version and drops it into the release description. Keep it plain-language and in
 the `- **Title.** *Before:* … *After:* …` style. Technical detail lives in CHANGELOG.md.
 
-## [0.8.0] - 2026-11-16
-
-Everyone in a room must update: 0.8 and 0.7 panels cannot share a session.
+## [0.8.1] - 2026-11-16
 
 Build **m3.11** adds:
 
@@ -34,7 +32,9 @@ Import the styled PSD before sharing; share an updated base when adding new artw
 Style rebuilds that would discard an existing pattern are refused. Custom-data
 layouts must match; each control supports up to 600 keys / 512 KiB of encoded data.
 
-Other changes in 0.8:
+## [0.8.0] - 2026-11-14
+
+Everyone in a room must update: 0.8 and 0.7 panels cannot share a session.
 
 - **Far more of the project syncs.** *Before:* position, scale, rotation, opacity, anchor,
   effects, masks, shapes and text. *After:* every property After Effects exposes, plus
@@ -67,6 +67,8 @@ Other changes in 0.8:
   does not have open appears when they open it.)
 - **Every comp stays in step, not just the open one.** Comps nobody is looking at are
   compared in the background and repaired if they drift.
+
+Not yet synced: the Pattern Overlay layer style, and Curves that are keyframed.
 
 ## [0.7.7] - 2026-10-29
 

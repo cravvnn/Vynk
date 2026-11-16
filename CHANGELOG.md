@@ -4,11 +4,20 @@ All notable changes to Vynk are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.0] - 2026-11-16
+## [0.8.1] - 2026-11-16
 
-Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
+Panel m3.11. Protocol remains version 2.
 
-### Build m3.11
+### Added
+
+- Animated Curves and compatible custom-data controls carry full key sequences in
+  layer-relative rational time, including interpolation, temporal flags and ease.
+  Byte/layout validation precedes mutation; writes are verified and failed writes
+  attempt restoration. Limits remain 600 keys and 512 KiB per control.
+- Pattern Overlay controls and animation are preserved on existing shared-base artwork.
+  New artwork still requires an updated shared base project.
+
+### Changed
 
 - Older AEGP suite acquisitions and synchronous native identity support hosts without
   scripting `Layer.id`. IDs stay local to one main-thread command; shared-base layers
@@ -24,6 +33,12 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
   AE2020 runtime matrix remain pending.
 - Local package manifests record their source commit. Publish preparation checks artifact
   hashes and targets that commit when suggesting a release command.
+- Product, CEP bundle and native resource versions are 0.8.1 so this package is distinct
+  from the published 0.8.0 release.
+
+## [0.8.0] - 2026-11-14
+
+Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
 
 ### Added
 
@@ -40,14 +55,10 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
   values. Scripts can only add a style through the Layer > Layer Styles menu, on the comp in
   the viewer, so a style change for a comp the receiver does not have open waits until they
   open it.
-- **Curves and compatible custom-data effect parameters sync** through the native companion,
+- **Curves and other custom-data effect parameters sync** through the native companion,
   which reads and writes their raw data (`ARBGET`/`ARBSET` on the bridge, main thread,
   one undo step). A different data size is refused rather than written. Needs the plug-in on
-  both machines. Animated values carry complete key sequences in layer-relative time,
-  including interpolation, temporal flags and ease. Whole payload/layout validation
-  precedes key deletion; writes are verified and failed writes attempt restoration.
-  Limits: 600 keys and 512 KiB of encoded data per control. Variable-size or incompatible
-  layouts are refused.
+  both machines.
 - **Repair covers the whole project.** Each panel publishes a fingerprint per comp; a comp
   that still differs from the longest-present teammate is re-read in full (so unnoticed local
   edits go out first) and then repaired, even if nobody has it open.
@@ -99,12 +110,6 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
 
 ### Fixed
 
-- Native custom-data writes now use the host snapshot after structural setters,
-  covering existing controls, new effects and new layers through one phase. Created
-  control errors and missing-companion failures are reported on their owning ops.
-- Existing Pattern Overlay styles are recognized during full layer upserts. Missing
-  artwork and style rebuilds that would discard a retained pattern are refused before
-  mutating the target layer.
 - **Two After Effects versions open at once.** The native companion now also writes
   `bridge-<key>.port`, keyed by its install folder, and the panel reads the file for its own
   install first. Previously both panels attached to whichever companion started last, so one
@@ -123,10 +128,9 @@ Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
 
 ### Known gaps
 
-- New Pattern Overlay artwork cannot be recreated through the exposed property stream.
-  Import styled PSDs before sharing the base. Existing pattern controls and keyframes
-  sync; a later artwork change requires an updated base. Mixed-style rebuilds that would
-  remove retained pattern artwork are refused.
+- Pattern Overlay (the one layer style with no menu command) and single-style removal other
+  than through Remove All + re-add.
+- Keyframed custom-data parameters (a keyframed Curves) are not synced; static ones are.
 - Footage import is not announced on its own; footage layers resolve media by path or name.
 
 ## [0.7.7] - 2026-10-29
