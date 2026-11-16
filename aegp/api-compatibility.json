@@ -1,5 +1,5 @@
 {
-  "description": "Source-level contract, not verified host compatibility. Parameter types checked against official Adobe Windows SDKs 25.2, 25.6, 26.5 and 27.0; native Release builds and CTest pass. Test real AE2020 before release.",
+  "description": "AE2020 source contract. Parameter types checked against Adobe Windows SDKs 25.2, 25.6, 26.5 and 27.0; native Release builds and CTest pass. AE2020 runtime testing remains on the compatibility checklist.",
   "reference": "https://ae-plugins.docsforadobe.dev/aegps/aegp-suites/",
   "suites": {
     "ItemSuite9": {

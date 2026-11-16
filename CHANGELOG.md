@@ -4,9 +4,26 @@ All notable changes to Vynk are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.0] - 2026-11-14
+## [0.8.0] - 2026-11-16
 
 Sync engine v2. Protocol version 2: 0.7.x panels cannot join a 0.8 room.
+
+### Build m3.11
+
+- Older AEGP suite acquisitions and synchronous native identity support hosts without
+  scripting `Layer.id`. IDs stay local to one main-thread command; shared-base layers
+  keep their identity and comments, and newly created layers refresh their binding.
+- Native script results accept allocated empty error handles and release both result
+  handles. Script failures return bounded diagnostics.
+- Pair checks attribute hosts by full executable path and recorded PID, probe panel
+  readiness without queued mutations, and preserve disposable-project shutdown guards.
+- Render comparisons wait for complete PNG output from a unique attempt path.
+- Focused Curves/Pattern/identity checks pass 24/24 on AE25.6/26.3, plus 9/9 with native
+  identity enabled before Pattern. The full113 attempt completed 82 cases (80 passes,
+  two text/camera differences) before the PNG timing issue; a complete rerun and the
+  AE2020 runtime matrix remain pending.
+- Local package manifests record their source commit. Publish preparation checks artifact
+  hashes and targets that commit when suggesting a release command.
 
 ### Added
 

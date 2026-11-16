@@ -9,9 +9,10 @@
 //   npm run publish -- --json       # print a machine-readable summary
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, basename } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -35,6 +36,27 @@ if (!existsSync(manifestPath)) {
   process.exit(1);
 }
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+if (manifest.version !== version || !/^[a-f0-9]{40}$/.test(manifest.sourceCommit || '')) {
+  console.error('Package source receipt is missing or differs from this version. Rebuild the package first.');
+  process.exit(1);
+}
+for (const file of manifest.files || []) {
+  if (!file.name || basename(file.name) !== file.name || /[\\/]/.test(file.name)) {
+    console.error('Invalid artifact path in the package manifest.');
+    process.exit(1);
+  }
+  const artifactPath = join(root, 'dist', file.name);
+  if (!existsSync(artifactPath)) {
+    console.error('Package artifact is missing: ' + file.name);
+    process.exit(1);
+  }
+  const bytes = readFileSync(artifactPath);
+  const hash = createHash('sha256').update(bytes).digest('hex');
+  if (bytes.length !== file.bytes || hash !== String(file.sha256).toLowerCase()) {
+    console.error('Package artifact differs from its manifest: ' + file.name);
+    process.exit(1);
+  }
+}
 const panel = manifest.files.find((f) => f.name.includes('panel'));
 const server = manifest.files.find((f) => f.name.includes('server'));
 if (!panel || !server) {
@@ -103,15 +125,15 @@ See \`deploy/README.md\` in the server zip.
 const notesPath = join(root, 'dist', `release-notes-${version}.md`);
 writeFileSync(notesPath, notes);
 
-const flags = [prerelease ? '--prerelease' : '--latest', `--title "Vynk ${version}"`, `--notes-file "${notesPath}"`, '--target main'];
+const flags = [prerelease ? '--prerelease' : '--latest', `--title "Vynk ${version}"`, `--notes-file "${notesPath}"`, `--target ${manifest.sourceCommit}`];
 const ghCommand =
-  `gh release create ${tag} --repo ${repo} ${flags.join(' ')}\n` +
-  `  "${join(root, 'dist', panel.name)}" "${join(root, 'dist', server.name)}"`;
+  `gh release create ${tag} --repo ${repo} ${flags.join(' ')} ` +
+  `"${join(root, 'dist', panel.name)}" "${join(root, 'dist', server.name)}"`;
 
 if (asJson) {
   console.log(
     JSON.stringify(
-      { version, tag, prerelease, notesPath, artifacts: manifest.files, ghCommand },
+      { version, tag, prerelease, sourceCommit: manifest.sourceCommit, notesPath, artifacts: manifest.files, ghCommand },
       null,
       2
     )

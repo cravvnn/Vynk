@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { deflateRawSync } from 'node:zlib';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve, basename } from 'node:path';
 
@@ -36,6 +36,12 @@ function fail(message) {
 function run(command) {
   console.log('> ' + command);
   execSync(command, { cwd: root, stdio: 'inherit' });
+}
+
+function sourceCommit() {
+  const options = { cwd: root, encoding: 'utf8', windowsHide: true };
+  if (execFileSync('git', ['status', '--porcelain'], options).trim()) fail('Commit source changes before packaging.');
+  return execFileSync('git', ['rev-parse', 'HEAD'], options).trim();
 }
 
 function ignoreForPackage(src) {
@@ -228,6 +234,8 @@ if (!skipTests) {
   run('npm test');
 }
 
+const packagedCommit = sourceCommit();
+
 mkdirSync(distDir, { recursive: true });
 rmSync(stagePanel, { recursive: true, force: true });
 rmSync(stageServer, { recursive: true, force: true });
@@ -270,7 +278,8 @@ const artifacts = [panelZip, serverZip].map((path) => ({
   sha256: sha256(path),
 }));
 
-const manifest = { name: 'Vynk', version, built: new Date().toISOString(), files: artifacts };
+if (sourceCommit() !== packagedCommit) fail('Source changed while packaging; rebuild from one committed revision.');
+const manifest = { name: 'Vynk', version, sourceCommit: packagedCommit, built: new Date().toISOString(), files: artifacts };
 writeFileSync(join(distDir, `manifest-${version}.json`), JSON.stringify(manifest, null, 2) + '\n');
 
 console.log('\nBuilt artifacts:');
