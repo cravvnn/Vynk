@@ -715,3 +715,43 @@ test('aborting a base upload releases its reservation and writer slot', async (t
   assert((await getHealth(relay.port)).ok);
   assert.deepEqual(await fs.readFile(path.join(relay.bases, 'ABORT1.aep')), bytes);
 });
+
+test('eight active editors per room receive the exact persisted edits across eight rooms', async (t) => {
+  const relay = await relayFixture(t);
+  await relay.start();
+  const rooms = await Promise.all(Array.from({ length: 8 }, async (_, index) => {
+    const code = 'TEAM' + index;
+    const peers = await Promise.all(Array.from({ length: 8 }, () => relay.join(code)));
+    assert(peers.every(peer => peer.welcome?.room === code));
+    return { code, peers, expected: new Map() };
+  }));
+
+  for (let round = 0; round < 12; round++) {
+    for (const { code, peers, expected } of rooms) {
+      for (const [index, peer] of peers.entries()) {
+        const op = edit([code, index, round].join('-'), round);
+        expected.set(op.opId, { op, author: peer.welcome.selfId });
+        peer.send(op);
+      }
+    }
+  }
+
+  await Promise.all(rooms.map(async ({ code, peers, expected }) => {
+    const received = peer => peer.messages.filter(message => message.t === 'op');
+    await until(() => peers.every(peer => received(peer).length >= expected.size), code + ' delivery');
+    const journal = (await fs.readFile(path.join(relay.rooms, code + '.jsonl'), 'utf8'))
+      .trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(journal.length, expected.size);
+    const seen = new Set();
+    for (const [index, entry] of journal.entries()) {
+      assert.equal(entry.seq, index + 1);
+      assert.deepEqual({ op: entry.op, author: entry.author }, expected.get(entry.op.opId));
+      seen.add(entry.op.opId);
+    }
+    assert.equal(seen.size, expected.size);
+    for (const peer of peers) {
+      assert.deepEqual(received(peer).map(({ t, ...entry }) => entry), journal);
+      assert(!peer.messages.some(message => message.t === 'error'));
+    }
+  }));
+});
