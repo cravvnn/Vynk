@@ -36,7 +36,7 @@ function getHealth(port) {
   });
 }
 
-async function relayFixture(t) {
+async function relayFixture(t, welcomeLimit = 2) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'vynk-delivery-'));
   const rooms = path.join(dir, 'rooms');
   const bases = path.join(dir, 'bases');
@@ -57,7 +57,7 @@ async function relayFixture(t) {
   };
   const start = async () => {
     child = spawn(process.execPath, ['server/dist/index.js'], {
-      env: { ...process.env, PORT: String(port), DATA_DIR: rooms, BASE_DIR: bases, MAX_OPS_IN_WELCOME: '2' },
+      env: { ...process.env, PORT: String(port), DATA_DIR: rooms, BASE_DIR: bases, MAX_OPS_IN_WELCOME: String(welcomeLimit) },
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
     });
     let errors = '';
@@ -754,4 +754,61 @@ test('eight active editors per room receive the exact persisted edits across eig
       assert(!peer.messages.some(message => message.t === 'error'));
     }
   }));
+});
+
+test('an eight-editor room keeps its edit order through a disconnect and delayed history replay', async (t) => {
+  const rounds = Number(process.env.VYNK_TEAM_ROUNDS ?? 20);
+  assert(Number.isSafeInteger(rounds) && rounds >= 1 && rounds <= 600);
+  const relay = await relayFixture(t, Math.min(3000, rounds * 6));
+  await relay.start();
+  const room = 'TEAMSYNC';
+  const writers = await Promise.all(Array.from({ length: 7 }, () => relay.join(room)));
+  const bytes = Buffer.from('team project');
+  const upload = baseRequest(relay, writers[0].welcome.token, 0, bytes);
+  upload.request.end(bytes);
+  assert.equal((await upload.response).status, 200);
+  const panel = relay.panel(room);
+  await until(() => panel.state.deliveryReady, 'eighth editor joined');
+  panel.state.projectName = 'base.aep';
+  panel.run('inAE=true; cs={}; tryApplyReplay()');
+  panel.state.ws.socket.close();
+  await until(() => !panel.state.connected, 'eighth editor offline');
+
+  const expected = new Map();
+  async function writeRounds(first, count) {
+    for (let round = first; round < first + count; round++) {
+      for (const [index, peer] of writers.entries()) {
+        const op = edit('team-' + round + '-' + index, round % 16);
+        op.target.layer = 'id' + (index + 2);
+        expected.set(op.opId, op);
+        peer.send(op);
+      }
+      await sleep(50);
+    }
+    await until(() => writers.every(peer => peer.messages.filter(m => m.t === 'op').length === expected.size), 'all active editors caught up');
+  }
+
+  await writeRounds(0, rounds);
+  let releaseHistory;
+  panel.set('__delayHistory', (cb, ...args) => { releaseHistory = () => cb(...args); });
+  panel.run('var originalGet=httpGetText; httpGetText=function(q,cb){originalGet(q,function(e,s,b){__delayHistory(cb,e,s,b);});}; connect()');
+  await until(() => panel.state.connected && panel.state.deliveryReady, 'eighth editor reconnected');
+  panel.run('tryApplyReplay()');
+  await until(() => Boolean(releaseHistory), 'history fetched for returning editor');
+  await writeRounds(rounds, rounds);
+  await until(() => panel.state.relaySeq === expected.size, 'live edits reached returning editor');
+  releaseHistory();
+  await until(() => panel.state.replayApplied, 'replay finished');
+  const journal = (await fs.readFile(path.join(relay.rooms, room + '.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(journal.length, expected.size);
+  assert.equal(new Set(journal.map(entry => entry.op.opId)).size, expected.size);
+  journal.forEach((entry, i) => {
+    assert.equal(entry.seq, i + 1);
+    assert.deepEqual(entry.op, expected.get(entry.op.opId));
+  });
+  const orderedIds = journal.map(entry => entry.op.opId);
+  for (const writer of writers) {
+    assert.deepEqual(writer.messages.filter(m => m.t === 'op').map(m => m.op.opId), orderedIds);
+  }
+  assert.deepEqual(Array.from(panel.state.inbox, group => group[0].opId), orderedIds);
 });
