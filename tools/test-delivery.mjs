@@ -36,7 +36,7 @@ function getHealth(port) {
   });
 }
 
-async function relayFixture(t, welcomeLimit = 2) {
+async function relayFixture(t, welcomeLimit = 2, measureSockets = false) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'vynk-delivery-'));
   const rooms = path.join(dir, 'rooms');
   const bases = path.join(dir, 'bases');
@@ -52,13 +52,15 @@ async function relayFixture(t, welcomeLimit = 2) {
     for (const socket of sockets) socket.terminate();
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
     const exited = new Promise((resolve) => child.once('exit', resolve));
-    child.kill();
+    if (measureSockets) child.send('shutdown');
+    else child.kill();
     await exited;
   };
   const start = async () => {
-    child = spawn(process.execPath, ['server/dist/index.js'], {
+    const args = measureSockets ? ['--require', './tools/test-socket-buffers.cjs'] : [];
+    child = spawn(process.execPath, [...args, 'server/dist/index.js'], {
       env: { ...process.env, PORT: String(port), DATA_DIR: rooms, BASE_DIR: bases, MAX_OPS_IN_WELCOME: String(welcomeLimit) },
-      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
+      stdio: measureSockets ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'], windowsHide: true
     });
     let errors = '';
     child.stderr.on('data', (c) => { errors += c; });
@@ -126,7 +128,11 @@ async function relayFixture(t, welcomeLimit = 2) {
     instance.run('connect()');
     return instance;
   };
-  return { dir, rooms, bases, url, port, start, stop, join, panel };
+  const sampleBuffers = () => new Promise(resolve => {
+    child.once('message', resolve);
+    child.send('sample');
+  });
+  return { dir, rooms, bases, url, port, start, stop, join, panel, sampleBuffers };
 }
 
 test('relay receipt and panel recovery across dropped frames, echoes and restarts', async (t) => {
@@ -811,4 +817,52 @@ test('an eight-editor room keeps its edit order through a disconnect and delayed
     assert.deepEqual(writer.messages.filter(m => m.t === 'op').map(m => m.op.opId), orderedIds);
   }
   assert.deepEqual(Array.from(panel.state.inbox, group => group[0].opId), orderedIds);
+});
+
+test('a connected slow reader drains its backlog while seven writers keep receiving edits', async t => {
+  const relay = await relayFixture(t, 2, true);
+  await relay.start();
+  const writers = await Promise.all(Array.from({ length: 7 }, () => relay.join('SLOWTEAM')));
+  const slow = await relay.join('SLOWTEAM');
+  slow.socket.pause();
+  const expected = new Map();
+  const payload = 'ab'.repeat(32768);
+  const durations = [];
+  for (let round = 0; round < 24; round++) {
+    const start = performance.now();
+    for (const [i, writer] of writers.entries()) {
+      const op = edit('arb-' + round + '-' + i);
+      op.kind = 'prop';
+      op.path = 'ADBE Effect Parade/ADBE CurvesCustom/ADBE CurvesCustom-0001';
+      op.value = { v: { arb: payload } };
+      expected.set(op.opId, op);
+      writer.send(op);
+    }
+    await until(() => writers.every(w => w.messages.filter(m => m.t === 'op').length === expected.size), 'seven live recipients');
+    durations.push(performance.now() - start);
+  }
+  const queued = await relay.sampleBuffers();
+  const slowBuffer = queued.find(p => p.id === slow.welcome.selfId);
+  assert(slowBuffer.peak > 0, 'exercise relay-side backpressure');
+  assert.equal(slow.messages.filter(m => m.t === 'op').length, 0);
+  const resume = performance.now();
+  slow.socket.resume();
+  await until(() => slow.messages.filter(m => m.t === 'op').length === expected.size, 'reader drained');
+  const drainMs = Math.round(performance.now() - resume);
+  const journal = (await fs.readFile(path.join(relay.rooms, 'SLOWTEAM.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(journal.length, expected.size);
+  assert.equal(new Set(journal.map(e => e.op.opId)).size, expected.size);
+  journal.forEach((e, i) => {
+    assert.equal(e.seq, i + 1);
+    assert.deepEqual(e.op, expected.get(e.op.opId));
+  });
+  for (const peer of [...writers, slow]) {
+    assert.equal(peer.socket.readyState, WebSocket.OPEN);
+    assert.deepEqual(peer.messages.filter(m => m.t === 'op').map(({ t, ...e }) => e), journal);
+  }
+  assert((await relay.sampleBuffers()).every(p => p.current === 0));
+  durations.sort((a, b) => a - b);
+  t.diagnostic(JSON.stringify({ edits: expected.size, slowPeakBytes: slowBuffer.peak,
+    fastPeakBytes: Math.max(...queued.filter(p => p !== slowBuffer).map(p => p.peak)),
+    roundP95Ms: Math.round(durations[Math.ceil(durations.length * 0.95) - 1]), drainMs }));
 });
