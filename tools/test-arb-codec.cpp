@@ -41,8 +41,32 @@ void scriptResults() {
   check(!NativeScript::readResult(&memory, &empty, static_cast<ScriptHandle*>(nullptr), 0, result, error) && error == "empty script result", "empty results cannot be accepted as receipts");
 }
 
+void scriptFraming() {
+  std::string line;
+  const std::string compact = R"json({"r":[],"text":"keep  spaces \n \t \"quoted\" \\path"})json";
+  const std::string pretty = R"json({
+  "r": [
+
+  ],
+  "text": "keep  spaces \n \t \"quoted\" \\path"
+})json";
+  check(NativeScript::oneLineResult(compact, line) && line == compact, "compact receipt bytes preserved");
+  check(NativeScript::oneLineResult("\t\r\n" + pretty + "\n", line) && line == compact, "pretty JSON receipts fit the one-line bridge");
+  const std::string unicode = "{\"text\":\"\xc3\xa9\"}";
+  check(NativeScript::oneLineResult(unicode, line) && line == unicode, "UTF-8 receipt bytes preserved");
+  for (const std::string invalid : {std::string(), std::string("[]"), std::string("{\"text\":\"line\nbreak\"}"),
+       std::string("{\"text\":\"tab\tvalue\"}"), std::string("{\"text\":\"unfinished\\")}) {
+    check(!NativeScript::oneLineResult(invalid, line), "invalid line receipts rejected without rewriting string values");
+  }
+  std::string nul = "{\"a\":";
+  nul.push_back('\0');
+  nul += "}";
+  check(!NativeScript::oneLineResult(nul, line), "embedded NUL cannot truncate a receipt");
+}
+
 int main() {
   try {
+    scriptFraming();
     scriptResults();
     check(NativeScript::quote("\"\\\n\t\r") == "\"\\\"\\\\\\u000a\\u0009\\u000d\"", "native script quoting");
     check(NativeScript::quote(std::string("a\0b", 3)) == "\"a\\u0000b\"", "native script embedded NUL");

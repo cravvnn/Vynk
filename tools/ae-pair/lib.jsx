@@ -54,9 +54,11 @@ $.global.vynkPair = (function () {
 
   function leaf(p, key, out) {
     var k;
+    var expressionActive = false;
     try {
       if (p.canSetExpression && p.expression) {
-        out[key + '@expr'] = p.expression + (p.expressionEnabled ? '' : ' [off]');
+        expressionActive = p.expressionEnabled;
+        out[key + '@expr'] = p.expression + (expressionActive ? '' : ' [off]');
       }
     } catch (e0) {}
     try {
@@ -70,7 +72,7 @@ $.global.vynkPair = (function () {
         }
         out[key + '@keys'] = keys;
       } else {
-        out[key] = norm(p.value);
+        out[key] = norm(expressionActive ? p.valueAtTime(0, true) : p.value);
       }
     } catch (e3) {}
   }

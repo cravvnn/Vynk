@@ -300,11 +300,12 @@ void cmdNativeCycle(const std::vector<std::string>& f) {
     // a missing ID fails the custom-data phase rather than replaying that prefix.
     logLine("native identity refresh failed");
   }
-  if (result.empty() || result[0] != '{' || result.find_first_of("\r\n\t") != std::string::npos) {
+  std::string line;
+  if (!NativeScript::oneLineResult(result, line)) {
     emit(prefix + "err:native identity result");
     return;
   }
-  emit(prefix + "ok\t" + result);
+  emit(prefix + "ok\t" + line);
 }
 
 const char kHex[] = "0123456789abcdef";

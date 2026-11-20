@@ -2,7 +2,7 @@
   'use strict';
 
   var PROTO = 2;
-  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev') + ' m3.11';
+  var PANEL_BUILD = (window.VYNK_VERSION ? 'v' + window.VYNK_VERSION : 'dev') + ' m3.12';
   var CURSOR_FLUSH_MS = 33;
   var POLL_FAST_MS = 200;
   var POLL_BURST_MS = 2500;

@@ -3,6 +3,21 @@
 #include <string>
 
 namespace NativeScript {
+inline bool oneLineResult(const std::string& text, std::string& line) {
+  line.clear();
+  bool quoted = false, escaped = false;
+  for (char c : text) {
+    if (!quoted && (c == ' ' || c == '\t' || c == '\r' || c == '\n')) continue;
+    if (static_cast<unsigned char>(c) < 32) { line.clear(); return false; }
+    line += c;
+    if (escaped) escaped = false;
+    else if (quoted && c == '\\') escaped = true;
+    else if (c == '"') quoted = !quoted;
+  }
+  if (quoted || escaped || line.empty() || line[0] != '{') { line.clear(); return false; }
+  return true;
+}
+
 template <typename Memory, typename Handle>
 inline bool readResult(Memory* memory, Handle resultH, Handle errorH, int sdkError,
                        std::string& result, std::string& error) {
